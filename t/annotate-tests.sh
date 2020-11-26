@@ -68,6 +68,14 @@ test_expect_success 'blame 1 author' '
 	check_count A 2
 '
 
+test_expect_success 'blame in a bare repo without starting commit' '
+	git clone --bare . bare.git &&
+	(
+		cd bare.git &&
+		check_count A 2
+	)
+'
+
 test_expect_success 'blame by tag objects' '
 	git tag -m "test tag" testTag &&
 	git tag -m "test tag #2" testTag2 testTag &&
@@ -469,6 +477,24 @@ test_expect_success 'blame -L ^:RE (absolute: not found)' '
 test_expect_success 'blame -L ^:RE (absolute: end-of-file)' '
 	n=$(printf "%d" $(wc -l <hello.c)) &&
 	check_count -f hello.c -L$n -L^:ma.. F 4 G 1 H 1
+'
+
+test_expect_success 'setup -L :funcname with userdiff driver' '
+	echo "fortran-* diff=fortran" >.gitattributes &&
+	fortran_file=fortran-external-function &&
+	orig_file="$TEST_DIRECTORY/t4018/$fortran_file" &&
+	cp $orig_file . &&
+	git add $fortran_file &&
+	GIT_AUTHOR_NAME="A" GIT_AUTHOR_EMAIL="A@test.git" \
+	git commit -m "add fortran file" &&
+	sed -e "s/ChangeMe/IWasChanged/" <"$orig_file" >$fortran_file &&
+	git add $fortran_file &&
+	GIT_AUTHOR_NAME="B" GIT_AUTHOR_EMAIL="B@test.git" \
+	git commit -m "change fortran file"
+'
+
+test_expect_success 'blame -L :funcname with userdiff driver' '
+	check_count -f fortran-external-function -L:RIGHT A 7 B 1
 '
 
 test_expect_success 'setup incremental' '

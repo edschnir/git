@@ -18,7 +18,6 @@
 #include "reflog-walk.h"
 #include "oidset.h"
 #include "packfile.h"
-#include "object-store.h"
 
 static const char rev_list_usage[] =
 "git rev-list [OPTION] <commit-id>... [ -- paths... ]\n"
@@ -49,6 +48,7 @@ static const char rev_list_usage[] =
 "    --objects | --objects-edge\n"
 "    --unpacked\n"
 "    --header | --pretty\n"
+"    --[no-]object-names\n"
 "    --abbrev=<n> | --no-abbrev\n"
 "    --abbrev-commit\n"
 "    --left-right\n"
@@ -75,9 +75,12 @@ enum missing_action {
 };
 static enum missing_action arg_missing_action;
 
+/* display only the oid of each object encountered */
+static int arg_show_object_names = 1;
+
 #define DEFAULT_OIDSET_SIZE     (16*1024)
 
-static void finish_commit(struct commit *commit, void *data);
+static void finish_commit(struct commit *commit);
 static void show_commit(struct commit *commit, void *data)
 {
 	struct rev_list_info *info = data;
@@ -86,7 +89,7 @@ static void show_commit(struct commit *commit, void *data)
 	display_progress(progress, ++progress_counter);
 
 	if (info->flags & REV_LIST_QUIET) {
-		finish_commit(commit, data);
+		finish_commit(commit);
 		return;
 	}
 
@@ -99,7 +102,7 @@ static void show_commit(struct commit *commit, void *data)
 			revs->count_left++;
 		else
 			revs->count_right++;
-		finish_commit(commit, data);
+		finish_commit(commit);
 		return;
 	}
 
@@ -188,16 +191,17 @@ static void show_commit(struct commit *commit, void *data)
 			putchar('\n');
 	}
 	maybe_flush_or_die(stdout, "stdout");
-	finish_commit(commit, data);
+	finish_commit(commit);
 }
 
-static void finish_commit(struct commit *commit, void *data)
+static void finish_commit(struct commit *commit)
 {
 	if (commit->parents) {
 		free_commit_list(commit->parents);
 		commit->parents = NULL;
 	}
-	free_commit_buffer(commit);
+	free_commit_buffer(the_repository->parsed_objects,
+			   commit);
 }
 
 static inline void finish_object__ma(struct object *obj)
@@ -237,7 +241,7 @@ static inline void finish_object__ma(struct object *obj)
 static int finish_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	if (!has_object_file(&obj->oid)) {
+	if (oid_object_info_extended(the_repository, &obj->oid, NULL, 0) < 0) {
 		finish_object__ma(obj);
 		return 1;
 	}
@@ -249,12 +253,30 @@ static int finish_object(struct object *obj, const char *name, void *cb_data)
 static void show_object(struct object *obj, const char *name, void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
+	struct rev_info *revs = info->revs;
+
 	if (finish_object(obj, name, cb_data))
 		return;
 	display_progress(progress, ++progress_counter);
 	if (info->flags & REV_LIST_QUIET)
 		return;
-	show_object_with_name(stdout, obj, name);
+
+	if (revs->count) {
+		/*
+		 * The object count is always accumulated in the .count_right
+		 * field for traversal that is not a left-right traversal,
+		 * and cmd_rev_list() made sure that a .count request that
+		 * wants to count non-commit objects, which is handled by
+		 * the show_object() callback, does not ask for .left_right.
+		 */
+		revs->count_right++;
+		return;
+	}
+
+	if (arg_show_object_names)
+		show_object_with_name(stdout, obj, name);
+	else
+		printf("%s\n", oid_to_hex(&obj->oid));
 }
 
 static void show_edge(struct commit *commit)
@@ -357,10 +379,86 @@ static inline int parse_missing_action_value(const char *value)
 	return 0;
 }
 
+static int try_bitmap_count(struct rev_info *revs,
+			    struct list_objects_filter_options *filter)
+{
+	uint32_t commit_count = 0,
+		 tag_count = 0,
+		 tree_count = 0,
+		 blob_count = 0;
+	int max_count;
+	struct bitmap_index *bitmap_git;
+
+	/* This function only handles counting, not general traversal. */
+	if (!revs->count)
+		return -1;
+
+	/*
+	 * A bitmap result can't know left/right, etc, because we don't
+	 * actually traverse.
+	 */
+	if (revs->left_right || revs->cherry_mark)
+		return -1;
+
+	/*
+	 * If we're counting reachable objects, we can't handle a max count of
+	 * commits to traverse, since we don't know which objects go with which
+	 * commit.
+	 */
+	if (revs->max_count >= 0 &&
+	    (revs->tag_objects || revs->tree_objects || revs->blob_objects))
+		return -1;
+
+	/*
+	 * This must be saved before doing any walking, since the revision
+	 * machinery will count it down to zero while traversing.
+	 */
+	max_count = revs->max_count;
+
+	bitmap_git = prepare_bitmap_walk(revs, filter);
+	if (!bitmap_git)
+		return -1;
+
+	count_bitmap_commit_list(bitmap_git, &commit_count,
+				 revs->tree_objects ? &tree_count : NULL,
+				 revs->blob_objects ? &blob_count : NULL,
+				 revs->tag_objects ? &tag_count : NULL);
+	if (max_count >= 0 && max_count < commit_count)
+		commit_count = max_count;
+
+	printf("%d\n", commit_count + tree_count + blob_count + tag_count);
+	free_bitmap_index(bitmap_git);
+	return 0;
+}
+
+static int try_bitmap_traversal(struct rev_info *revs,
+				struct list_objects_filter_options *filter)
+{
+	struct bitmap_index *bitmap_git;
+
+	/*
+	 * We can't use a bitmap result with a traversal limit, since the set
+	 * of commits we'd get would be essentially random.
+	 */
+	if (revs->max_count >= 0)
+		return -1;
+
+	bitmap_git = prepare_bitmap_walk(revs, filter);
+	if (!bitmap_git)
+		return -1;
+
+	traverse_bitmap_commit_list(bitmap_git, revs, &show_object_fast);
+	free_bitmap_index(bitmap_git);
+	return 0;
+}
+
 int cmd_rev_list(int argc, const char **argv, const char *prefix)
 {
 	struct rev_info revs;
 	struct rev_list_info info;
+	struct setup_revision_opt s_r_opt = {
+		.allow_exclude_promisor_objects = 1,
+	};
 	int i;
 	int bisect_list = 0;
 	int bisect_show_vars = 0;
@@ -374,9 +472,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	git_config(git_default_config, NULL);
 	repo_init_revisions(the_repository, &revs, prefix);
 	revs.abbrev = DEFAULT_ABBREV;
-	revs.allow_exclude_promisor_objects_opt = 1;
 	revs.commit_format = CMIT_FMT_UNSPECIFIED;
-	revs.do_not_die_on_missing_tree = 1;
 
 	/*
 	 * Scan the argument list before invoking setup_revisions(), so that we
@@ -406,7 +502,10 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		}
 	}
 
-	argc = setup_revisions(argc, argv, &revs, NULL);
+	if (arg_missing_action)
+		revs.do_not_die_on_missing_tree = 1;
+
+	argc = setup_revisions(argc, argv, &revs, &s_r_opt);
 
 	memset(&info, 0, sizeof(info));
 	info.revs = &revs;
@@ -459,10 +558,6 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			parse_list_objects_filter(&filter_options, arg);
 			if (filter_options.choice && !revs.blob_objects)
 				die(_("object filtering requires --objects"));
-			if (filter_options.choice == LOFC_SPARSE_OID &&
-			    !filter_options.sparse_oid_value)
-				die(_("invalid sparse value '%s'"),
-				    filter_options.filter_spec);
 			continue;
 		}
 		if (!strcmp(arg, ("--no-" CL_ARG__FILTER))) {
@@ -478,6 +573,16 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			continue; /* already handled above */
 		if (skip_prefix(arg, "--missing=", &arg))
 			continue; /* already handled above */
+
+		if (!strcmp(arg, ("--no-object-names"))) {
+			arg_show_object_names = 0;
+			continue;
+		}
+
+		if (!strcmp(arg, ("--object-names"))) {
+			arg_show_object_names = 1;
+			continue;
+		}
 
 		usage(rev_list_usage);
 
@@ -504,8 +609,10 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (revs.show_notes)
 		die(_("rev-list does not support display of notes"));
 
-	if (filter_options.choice && use_bitmap_index)
-		die(_("cannot combine --use-bitmap-index with object filtering"));
+	if (revs.count &&
+	    (revs.tag_objects || revs.tree_objects || revs.blob_objects) &&
+	    (revs.left_right || revs.cherry_mark))
+		die(_("marked counting is incompatible with --objects"));
 
 	save_commit_buffer = (revs.verbose_header ||
 			      revs.grep_filter.pattern_list ||
@@ -516,39 +623,29 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (show_progress)
 		progress = start_delayed_progress(show_progress, 0);
 
-	if (use_bitmap_index && !revs.prune) {
-		if (revs.count && !revs.left_right && !revs.cherry_mark) {
-			uint32_t commit_count;
-			int max_count = revs.max_count;
-			struct bitmap_index *bitmap_git;
-			if ((bitmap_git = prepare_bitmap_walk(&revs))) {
-				count_bitmap_commit_list(bitmap_git, &commit_count, NULL, NULL, NULL);
-				if (max_count >= 0 && max_count < commit_count)
-					commit_count = max_count;
-				printf("%d\n", commit_count);
-				free_bitmap_index(bitmap_git);
-				return 0;
-			}
-		} else if (revs.max_count < 0 &&
-			   revs.tag_objects && revs.tree_objects && revs.blob_objects) {
-			struct bitmap_index *bitmap_git;
-			if ((bitmap_git = prepare_bitmap_walk(&revs))) {
-				traverse_bitmap_commit_list(bitmap_git, &show_object_fast);
-				free_bitmap_index(bitmap_git);
-				return 0;
-			}
-		}
+	if (use_bitmap_index) {
+		if (!try_bitmap_count(&revs, &filter_options))
+			return 0;
+		if (!try_bitmap_traversal(&revs, &filter_options))
+			return 0;
 	}
 
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
 	if (revs.tree_objects)
-		mark_edges_uninteresting(&revs, show_edge);
+		mark_edges_uninteresting(&revs, show_edge, 0);
 
 	if (bisect_list) {
 		int reaches, all;
+		unsigned bisect_flags = 0;
 
-		find_bisection(&revs.commits, &reaches, &all, bisect_find_all);
+		if (bisect_find_all)
+			bisect_flags |= FIND_BISECTION_ALL;
+
+		if (revs.first_parent_only)
+			bisect_flags |= FIND_BISECTION_FIRST_PARENT_ONLY;
+
+		find_bisection(&revs.commits, &reaches, &all, bisect_flags);
 
 		if (bisect_show_vars)
 			return show_bisect_vars(&info, reaches, all);

@@ -1,7 +1,7 @@
 #include "cache.h"
 #include "exec-cmd.h"
 #include "quote.h"
-#include "argv-array.h"
+#include "strvec.h"
 
 #if defined(RUNTIME_PREFIX)
 
@@ -209,6 +209,8 @@ static int git_get_exec_path(struct strbuf *buf, const char *argv0)
 		return -1;
 	}
 
+	trace2_cmd_path(buf->buf);
+
 	return 0;
 }
 
@@ -318,26 +320,26 @@ void setup_path(void)
 	strbuf_release(&new_path);
 }
 
-const char **prepare_git_cmd(struct argv_array *out, const char **argv)
+const char **prepare_git_cmd(struct strvec *out, const char **argv)
 {
-	argv_array_push(out, "git");
-	argv_array_pushv(out, argv);
-	return out->argv;
+	strvec_push(out, "git");
+	strvec_pushv(out, argv);
+	return out->v;
 }
 
 int execv_git_cmd(const char **argv)
 {
-	struct argv_array nargv = ARGV_ARRAY_INIT;
+	struct strvec nargv = STRVEC_INIT;
 
 	prepare_git_cmd(&nargv, argv);
-	trace_argv_printf(nargv.argv, "trace: exec:");
+	trace_argv_printf(nargv.v, "trace: exec:");
 
 	/* execvp() can only ever return if it fails */
-	sane_execvp("git", (char **)nargv.argv);
+	sane_execvp("git", (char **)nargv.v);
 
 	trace_printf("trace: exec failed: %s\n", strerror(errno));
 
-	argv_array_clear(&nargv);
+	strvec_clear(&nargv);
 	return -1;
 }
 

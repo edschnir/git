@@ -52,7 +52,7 @@ static void free_rerere_id(struct string_list_item *item)
 
 static const char *rerere_id_hex(const struct rerere_id *id)
 {
-	return sha1_to_hex(id->collection->hash);
+	return hash_to_hex(id->collection->hash);
 }
 
 static void fit_variant(struct rerere_dir *rr_dir, int variant)
@@ -115,7 +115,7 @@ static int is_rr_file(const char *name, const char *filename, int *variant)
 static void scan_rerere_dir(struct rerere_dir *rr_dir)
 {
 	struct dirent *de;
-	DIR *dir = opendir(git_path("rr-cache/%s", sha1_to_hex(rr_dir->hash)));
+	DIR *dir = opendir(git_path("rr-cache/%s", hash_to_hex(rr_dir->hash)));
 
 	if (!dir)
 		return;
@@ -186,9 +186,9 @@ static struct rerere_id *new_rerere_id_hex(char *hex)
 	return id;
 }
 
-static struct rerere_id *new_rerere_id(unsigned char *sha1)
+static struct rerere_id *new_rerere_id(unsigned char *hash)
 {
-	return new_rerere_id_hex(sha1_to_hex(sha1));
+	return new_rerere_id_hex(hash_to_hex(hash));
 }
 
 /*
@@ -431,7 +431,7 @@ static int handle_conflict(struct strbuf *out, struct rerere_io *io,
  * and NUL concatenated together.
  *
  * Return 1 if conflict hunks are found, 0 if there are no conflict
- * hunks and -1 if an error occured.
+ * hunks and -1 if an error occurred.
  */
 static int handle_path(unsigned char *hash, struct rerere_io *io, int marker_size)
 {
@@ -561,7 +561,7 @@ static int find_conflict(struct repository *r, struct string_list *conflict)
 {
 	int i;
 
-	if (read_index(r->index) < 0)
+	if (repo_read_index(r) < 0)
 		return error(_("index file corrupt"));
 
 	for (i = 0; i < r->index->cache_nr;) {
@@ -595,7 +595,7 @@ int rerere_remaining(struct repository *r, struct string_list *merge_rr)
 
 	if (setup_rerere(r, merge_rr, RERERE_READONLY))
 		return 0;
-	if (read_index(r->index) < 0)
+	if (repo_read_index(r) < 0)
 		return error(_("index file corrupt"));
 
 	for (i = 0; i < r->index->cache_nr;) {
@@ -705,7 +705,7 @@ static void update_paths(struct repository *r, struct string_list *update)
 	struct lock_file index_lock = LOCK_INIT;
 	int i;
 
-	hold_locked_index(&index_lock, LOCK_DIE_ON_ERROR);
+	repo_hold_locked_index(r, &index_lock, LOCK_DIE_ON_ERROR);
 
 	for (i = 0; i < update->nr; i++) {
 		struct string_list_item *item = &update->items[i];
@@ -1107,7 +1107,7 @@ int rerere_forget(struct repository *r, struct pathspec *pathspec)
 	struct string_list conflict = STRING_LIST_INIT_DUP;
 	struct string_list merge_rr = STRING_LIST_INIT_DUP;
 
-	if (read_index(r->index) < 0)
+	if (repo_read_index(r) < 0)
 		return error(_("index file corrupt"));
 
 	fd = setup_rerere(r, &merge_rr, RERERE_NOAUTOUPDATE);

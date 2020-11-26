@@ -34,7 +34,7 @@ int cache_tree_fully_valid(struct cache_tree *);
 int cache_tree_update(struct index_state *, int);
 void cache_tree_verify(struct repository *, struct index_state *);
 
-/* bitmasks to write_cache_as_tree flags */
+/* bitmasks to write_index_as_tree flags */
 #define WRITE_TREE_MISSING_OK 1
 #define WRITE_TREE_IGNORE_CACHE_TREE 2
 #define WRITE_TREE_DRY_RUN 4
@@ -46,12 +46,13 @@ void cache_tree_verify(struct repository *, struct index_state *);
 #define WRITE_TREE_UNMERGED_INDEX (-2)
 #define WRITE_TREE_PREFIX_ERROR (-3)
 
+struct tree* write_in_core_index_as_tree(struct repository *repo);
 int write_index_as_tree(struct object_id *oid, struct index_state *index_state, const char *index_path, int flags, const char *prefix);
 void prime_cache_tree(struct repository *, struct index_state *, struct tree *);
 
 int cache_tree_matches_traversal(struct cache_tree *, struct name_entry *ent, struct traverse_info *info);
 
-#ifndef NO_THE_INDEX_COMPATIBILITY_MACROS
+#ifdef USE_THE_INDEX_COMPATIBILITY_MACROS
 static inline int write_cache_as_tree(struct object_id *oid, int flags, const char *prefix)
 {
 	return write_index_as_tree(oid, &the_index, get_index_file(), flags, prefix);

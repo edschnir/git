@@ -1,9 +1,10 @@
-#define NO_THE_INDEX_COMPATIBILITY_MACROS
 #include "cache.h"
 #include "config.h"
 #include "dir.h"
 #include "pathspec.h"
 #include "attr.h"
+#include "strvec.h"
+#include "quote.h"
 
 /*
  * Finds which of the given pathspecs match items in the index.
@@ -437,8 +438,13 @@ static void init_pathspec_item(struct pathspec_item *item, unsigned flags,
 	} else {
 		match = prefix_path_gently(prefix, prefixlen,
 					   &prefixlen, copyfrom);
-		if (!match)
-			die(_("%s: '%s' is outside repository"), elt, copyfrom);
+		if (!match) {
+			const char *hint_path = get_git_work_tree();
+			if (!hint_path)
+				hint_path = get_git_dir();
+			die(_("%s: '%s' is outside repository at '%s'"), elt,
+			    copyfrom, absolute_path(hint_path));
+		}
 	}
 
 	item->match = match;
@@ -614,6 +620,42 @@ void parse_pathspec(struct pathspec *pathspec,
 	}
 }
 
+void parse_pathspec_file(struct pathspec *pathspec, unsigned magic_mask,
+			 unsigned flags, const char *prefix,
+			 const char *file, int nul_term_line)
+{
+	struct strvec parsed_file = STRVEC_INIT;
+	strbuf_getline_fn getline_fn = nul_term_line ? strbuf_getline_nul :
+						       strbuf_getline;
+	struct strbuf buf = STRBUF_INIT;
+	struct strbuf unquoted = STRBUF_INIT;
+	FILE *in;
+
+	if (!strcmp(file, "-"))
+		in = stdin;
+	else
+		in = xfopen(file, "r");
+
+	while (getline_fn(&buf, in) != EOF) {
+		if (!nul_term_line && buf.buf[0] == '"') {
+			strbuf_reset(&unquoted);
+			if (unquote_c_style(&unquoted, buf.buf, NULL))
+				die(_("line is badly quoted: %s"), buf.buf);
+			strbuf_swap(&buf, &unquoted);
+		}
+		strvec_push(&parsed_file, buf.buf);
+		strbuf_reset(&buf);
+	}
+
+	strbuf_release(&unquoted);
+	strbuf_release(&buf);
+	if (in != stdin)
+		fclose(in);
+
+	parse_pathspec(pathspec, magic_mask, flags, prefix, parsed_file.v);
+	strvec_clear(&parsed_file);
+}
+
 void copy_pathspec(struct pathspec *dst, const struct pathspec *src)
 {
 	int i, j;
@@ -658,4 +700,42 @@ void clear_pathspec(struct pathspec *pathspec)
 
 	FREE_AND_NULL(pathspec->items);
 	pathspec->nr = 0;
+}
+
+int match_pathspec_attrs(const struct index_state *istate,
+			 const char *name, int namelen,
+			 const struct pathspec_item *item)
+{
+	int i;
+	char *to_free = NULL;
+
+	if (name[namelen])
+		name = to_free = xmemdupz(name, namelen);
+
+	git_check_attr(istate, name, item->attr_check);
+
+	free(to_free);
+
+	for (i = 0; i < item->attr_match_nr; i++) {
+		const char *value;
+		int matched;
+		enum attr_match_mode match_mode;
+
+		value = item->attr_check->items[i].value;
+		match_mode = item->attr_match[i].match_mode;
+
+		if (ATTR_TRUE(value))
+			matched = (match_mode == MATCH_SET);
+		else if (ATTR_FALSE(value))
+			matched = (match_mode == MATCH_UNSET);
+		else if (ATTR_UNSET(value))
+			matched = (match_mode == MATCH_UNSPECIFIED);
+		else
+			matched = (match_mode == MATCH_VALUE &&
+				   !strcmp(item->attr_match[i].value, value));
+		if (!matched)
+			return 0;
+	}
+
+	return 1;
 }

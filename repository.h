@@ -6,8 +6,42 @@
 struct config_set;
 struct git_hash_algo;
 struct index_state;
+struct lock_file;
+struct pathspec;
 struct raw_object_store;
 struct submodule_cache;
+
+enum untracked_cache_setting {
+	UNTRACKED_CACHE_UNSET = -1,
+	UNTRACKED_CACHE_REMOVE = 0,
+	UNTRACKED_CACHE_KEEP = 1,
+	UNTRACKED_CACHE_WRITE = 2
+};
+
+enum fetch_negotiation_setting {
+	FETCH_NEGOTIATION_UNSET = -1,
+	FETCH_NEGOTIATION_NONE = 0,
+	FETCH_NEGOTIATION_DEFAULT = 1,
+	FETCH_NEGOTIATION_SKIPPING = 2,
+	FETCH_NEGOTIATION_NOOP = 3,
+};
+
+struct repo_settings {
+	int initialized;
+
+	int core_commit_graph;
+	int commit_graph_read_changed_paths;
+	int gc_write_commit_graph;
+	int fetch_write_commit_graph;
+
+	int index_version;
+	enum untracked_cache_setting core_untracked_cache;
+
+	int pack_use_sparse;
+	enum fetch_negotiation_setting fetch_negotiation_algorithm;
+
+	int core_multi_pack_index;
+};
 
 struct repository {
 	/* Environment */
@@ -37,8 +71,12 @@ struct repository {
 	 */
 	struct parsed_object_pool *parsed_objects;
 
-	/* The store in which the refs are held. */
-	struct ref_store *refs;
+	/*
+	 * The store in which the refs are held. This should generally only be
+	 * accessed via get_main_ref_store(), as that will lazily initialize
+	 * the ref object.
+	 */
+	struct ref_store *refs_private;
 
 	/*
 	 * Contains path to often used file names.
@@ -70,6 +108,8 @@ struct repository {
 	 */
 	char *submodule_prefix;
 
+	struct repo_settings settings;
+
 	/* Subsystems */
 	/*
 	 * Repository's config which contains key-value pairs from the usual
@@ -89,6 +129,12 @@ struct repository {
 
 	/* Repository's current hash algorithm, as serialized on disk. */
 	const struct git_hash_algo *hash_algo;
+
+	/* A unique-id for tracing purposes. */
+	int trace2_repo_id;
+
+	/* True if commit-graph has been disabled within this process. */
+	int commit_graph_disabled;
 
 	/* Configurations */
 
@@ -116,9 +162,17 @@ void repo_set_worktree(struct repository *repo, const char *path);
 void repo_set_hash_algo(struct repository *repo, int algo);
 void initialize_the_repository(void);
 int repo_init(struct repository *r, const char *gitdir, const char *worktree);
-int repo_submodule_init(struct repository *submodule,
+
+/*
+ * Initialize the repository 'subrepo' as the submodule given by the
+ * struct submodule 'sub' in parent repository 'superproject'.
+ * Return 0 upon success and a non-zero value upon failure, which may happen
+ * if the submodule is not found, or 'sub' is NULL.
+ */
+struct submodule;
+int repo_submodule_init(struct repository *subrepo,
 			struct repository *superproject,
-			const char *path);
+			const struct submodule *sub);
 void repo_clear(struct repository *repo);
 
 /*
@@ -126,9 +180,30 @@ void repo_clear(struct repository *repo);
  * be allocated if needed.
  *
  * Return the number of index entries in the populated index or a value less
- * than zero if an error occured.  If the repository's index has already been
+ * than zero if an error occurred.  If the repository's index has already been
  * populated then the number of entries will simply be returned.
  */
 int repo_read_index(struct repository *repo);
+int repo_hold_locked_index(struct repository *repo,
+			   struct lock_file *lf,
+			   int flags);
+
+int repo_read_index_preload(struct repository *,
+			    const struct pathspec *pathspec,
+			    unsigned refresh_flags);
+int repo_read_index_unmerged(struct repository *);
+/*
+ * Opportunistically update the index but do not complain if we can't.
+ * The lockfile is always committed or rolled back.
+ */
+void repo_update_index_if_able(struct repository *, struct lock_file *);
+
+void prepare_repo_settings(struct repository *r);
+
+/*
+ * Return 1 if upgrade repository format to target_version succeeded,
+ * 0 if no upgrade is necessary, and -1 when upgrade is not possible.
+ */
+int upgrade_repository_format(int target_version);
 
 #endif /* REPOSITORY_H */

@@ -13,38 +13,6 @@ struct object_id *OIDPTR;
 @@
 struct object_id OID;
 @@
-- sha1_to_hex(OID.hash)
-+ oid_to_hex(&OID)
-
-@@
-identifier f != oid_to_hex;
-struct object_id *OIDPTR;
-@@
-  f(...) {<...
-- sha1_to_hex(OIDPTR->hash)
-+ oid_to_hex(OIDPTR)
-  ...>}
-
-@@
-expression E;
-struct object_id OID;
-@@
-- sha1_to_hex_r(E, OID.hash)
-+ oid_to_hex_r(E, &OID)
-
-@@
-identifier f != oid_to_hex_r;
-expression E;
-struct object_id *OIDPTR;
-@@
-   f(...) {<...
-- sha1_to_hex_r(E, OIDPTR->hash)
-+ oid_to_hex_r(E, OIDPTR)
-  ...>}
-
-@@
-struct object_id OID;
-@@
 - hashclr(OID.hash)
 + oidclr(&OID)
 
@@ -85,36 +53,6 @@ struct object_id OID;
 @@
 - hashcmp(OID.hash, OIDPTR->hash)
 + oidcmp(&OID, OIDPTR)
-
-@@
-struct object_id OID1, OID2;
-@@
-- hashcpy(OID1.hash, OID2.hash)
-+ oidcpy(&OID1, &OID2)
-
-@@
-identifier f != oidcpy;
-struct object_id *OIDPTR1;
-struct object_id *OIDPTR2;
-@@
-  f(...) {<...
-- hashcpy(OIDPTR1->hash, OIDPTR2->hash)
-+ oidcpy(OIDPTR1, OIDPTR2)
-  ...>}
-
-@@
-struct object_id *OIDPTR;
-struct object_id OID;
-@@
-- hashcpy(OIDPTR->hash, OID.hash)
-+ oidcpy(OIDPTR, &OID)
-
-@@
-struct object_id *OIDPTR;
-struct object_id OID;
-@@
-- hashcpy(OID.hash, OIDPTR->hash)
-+ oidcpy(&OID, OIDPTR)
 
 @@
 struct object_id *OIDPTR1;

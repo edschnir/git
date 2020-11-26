@@ -245,6 +245,27 @@ void strbuf_addchars(struct strbuf *sb, int c, size_t n);
 void strbuf_insert(struct strbuf *sb, size_t pos, const void *, size_t);
 
 /**
+ * Insert a NUL-terminated string to the given position of the buffer.
+ * The remaining contents will be shifted, not overwritten.  It's an
+ * inline function to allow the compiler to resolve strlen() calls on
+ * constants at compile time.
+ */
+static inline void strbuf_insertstr(struct strbuf *sb, size_t pos,
+				    const char *s)
+{
+	strbuf_insert(sb, pos, s, strlen(s));
+}
+
+/**
+ * Insert data to the given position of the buffer giving a printf format
+ * string. The contents will be shifted, not overwritten.
+ */
+void strbuf_vinsertf(struct strbuf *sb, size_t pos, const char *fmt,
+		     va_list ap);
+
+void strbuf_insertf(struct strbuf *sb, size_t pos, const char *fmt, ...);
+
+/**
  * Remove given amount of data from a given position of the buffer.
  */
 void strbuf_remove(struct strbuf *sb, size_t pos, size_t len);
@@ -289,6 +310,13 @@ static inline void strbuf_addstr(struct strbuf *sb, const char *s)
 void strbuf_addbuf(struct strbuf *sb, const struct strbuf *sb2);
 
 /**
+ * Join the arguments into a buffer. `delim` is put between every
+ * two arguments.
+ */
+const char *strbuf_join_argv(struct strbuf *buf, int argc,
+			     const char **argv, char delim);
+
+/**
  * This function can be used to expand a format string containing
  * placeholders. To that end, it parses the string and calls the specified
  * function for every percent sign found.
@@ -321,6 +349,14 @@ void strbuf_expand(struct strbuf *sb,
 		   void *context);
 
 /**
+ * Used as callback for `strbuf_expand` to only expand literals
+ * (i.e. %n and %xNN). The context argument is ignored.
+ */
+size_t strbuf_expand_literal_cb(struct strbuf *sb,
+				const char *placeholder,
+				void *context);
+
+/**
  * Used as callback for `strbuf_expand()`, expects an array of
  * struct strbuf_expand_dict_entry as context, i.e. pairs of
  * placeholder and replacement string.  The array needs to be
@@ -342,11 +378,28 @@ size_t strbuf_expand_dict_cb(struct strbuf *sb,
  */
 void strbuf_addbuf_percentquote(struct strbuf *dst, const struct strbuf *src);
 
+#define STRBUF_ENCODE_SLASH 1
+
+/**
+ * Append the contents of a string to a strbuf, percent-encoding any characters
+ * that are needed to be encoded for a URL.
+ *
+ * If STRBUF_ENCODE_SLASH is set in flags, percent-encode slashes.  Otherwise,
+ * slashes are not percent-encoded.
+ */
+void strbuf_add_percentencode(struct strbuf *dst, const char *src, int flags);
+
 /**
  * Append the given byte size as a human-readable string (i.e. 12.23 KiB,
  * 3.50 MiB).
  */
 void strbuf_humanise_bytes(struct strbuf *buf, off_t bytes);
+
+/**
+ * Append the given byte rate as a human-readable string (i.e. 12.23 KiB/s,
+ * 3.50 MiB/s).
+ */
+void strbuf_humanise_rate(struct strbuf *buf, off_t bytes);
 
 /**
  * Add a formatted string to the buffer.
@@ -453,6 +506,12 @@ int strbuf_getline(struct strbuf *sb, FILE *file);
  * any) in the buffer.
  */
 int strbuf_getwholeline(struct strbuf *sb, FILE *file, int term);
+
+/**
+ * Like `strbuf_getwholeline`, but appends the line instead of
+ * resetting the buffer first.
+ */
+int strbuf_appendwholeline(struct strbuf *sb, FILE *file, int term);
 
 /**
  * Like `strbuf_getwholeline`, but operates on a file descriptor.
@@ -591,6 +650,17 @@ int launch_editor(const char *path, struct strbuf *buffer,
 int launch_sequence_editor(const char *path, struct strbuf *buffer,
 			   const char *const *env);
 
+/*
+ * In contrast to `launch_editor()`, this function writes out the contents
+ * of the specified file first, then clears the `buffer`, then launches
+ * the editor and reads back in the file contents into the `buffer`.
+ * Finally, it deletes the temporary file.
+ *
+ * If `path` is relative, it refers to a file in the `.git` directory.
+ */
+int strbuf_edit_interactively(struct strbuf *buffer, const char *path,
+			      const char *const *env);
+
 void strbuf_add_lines(struct strbuf *sb,
 		      const char *prefix,
 		      const char *buf,
@@ -642,8 +712,13 @@ void strbuf_branchname(struct strbuf *sb, const char *name,
  */
 int strbuf_check_branch_ref(struct strbuf *sb, const char *name);
 
+typedef int (*char_predicate)(char ch);
+
+int is_rfc3986_unreserved(char ch);
+int is_rfc3986_reserved_or_unreserved(char ch);
+
 void strbuf_addstr_urlencode(struct strbuf *sb, const char *name,
-			     int reserved);
+			     char_predicate allow_unencoded_fn);
 
 __attribute__((format (printf,1,2)))
 int printf_ln(const char *fmt, ...);

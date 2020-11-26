@@ -29,14 +29,14 @@ void init_notes_merge_options(struct repository *r,
 
 static int path_to_oid(const char *path, struct object_id *oid)
 {
-	char hex_oid[GIT_SHA1_HEXSZ];
+	char hex_oid[GIT_MAX_HEXSZ];
 	int i = 0;
-	while (*path && i < GIT_SHA1_HEXSZ) {
+	while (*path && i < the_hash_algo->hexsz) {
 		if (*path != '/')
 			hex_oid[i++] = *path;
 		path++;
 	}
-	if (*path || i != GIT_SHA1_HEXSZ)
+	if (*path || i != the_hash_algo->hexsz)
 		return -1;
 	return get_oid_hex(hex_oid, oid);
 }
@@ -649,7 +649,7 @@ int notes_merge(struct notes_merge_options *o,
 		struct commit_list *parents = NULL;
 		commit_list_insert(remote, &parents); /* LIFO order */
 		commit_list_insert(local, &parents);
-		create_notes_commit(local_tree, parents, o->commit_msg.buf,
+		create_notes_commit(o->repo, local_tree, parents, o->commit_msg.buf,
 				    o->commit_msg.len, result_oid);
 	}
 
@@ -724,7 +724,7 @@ int notes_merge_commit(struct notes_merge_options *o,
 		strbuf_setlen(&path, baselen);
 	}
 
-	create_notes_commit(partial_tree, partial_commit->parents, msg,
+	create_notes_commit(o->repo, partial_tree, partial_commit->parents, msg,
 			    strlen(msg), result_oid);
 	unuse_commit_buffer(partial_commit, buffer);
 	if (o->verbosity >= 4)

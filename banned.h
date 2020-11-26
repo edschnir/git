@@ -16,6 +16,8 @@
 #define strcat(x,y) BANNED(strcat)
 #undef strncpy
 #define strncpy(x,y,n) BANNED(strncpy)
+#undef strncat
+#define strncat(x,y,n) BANNED(strncat)
 
 #undef sprintf
 #undef vsprintf
@@ -24,7 +26,7 @@
 #define vsprintf(...) BANNED(vsprintf)
 #else
 #define sprintf(buf,fmt,arg) BANNED(sprintf)
-#define vsprintf(buf,fmt,arg) BANNED(sprintf)
+#define vsprintf(buf,fmt,arg) BANNED(vsprintf)
 #endif
 
 #endif /* BANNED_H */

@@ -202,7 +202,6 @@ test_expect_success 'exit when p4 fails to produce marshaled output' '
 		export PATH &&
 		test_expect_code 1 git p4 clone --dest="$git" //depot >errs 2>&1
 	) &&
-	cat errs &&
 	test_i18ngrep ! Traceback errs
 '
 
@@ -324,10 +323,6 @@ test_expect_success 'submit from worktree' '
 		p4 sync &&
 		test_path_is_file worktree-commit.t
 	)
-'
-
-test_expect_success 'kill p4d' '
-	kill_p4d
 '
 
 test_done

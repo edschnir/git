@@ -5,15 +5,17 @@
  *
  * Fetch one or more remote refs and merge it/them into the current HEAD.
  */
+#define USE_THE_INDEX_COMPATIBILITY_MACROS
 #include "cache.h"
 #include "config.h"
 #include "builtin.h"
 #include "parse-options.h"
 #include "exec-cmd.h"
 #include "run-command.h"
-#include "sha1-array.h"
+#include "oid-array.h"
 #include "remote.h"
 #include "dir.h"
+#include "rebase.h"
 #include "refs.h"
 #include "refspec.h"
 #include "revision.h"
@@ -23,15 +25,7 @@
 #include "lockfile.h"
 #include "wt-status.h"
 #include "commit-reach.h"
-
-enum rebase_type {
-	REBASE_INVALID = -1,
-	REBASE_FALSE = 0,
-	REBASE_TRUE,
-	REBASE_PRESERVE,
-	REBASE_MERGES,
-	REBASE_INTERACTIVE
-};
+#include "sequencer.h"
 
 /**
  * Parses the value of --rebase. If value is a false value, returns
@@ -43,18 +37,9 @@ enum rebase_type {
 static enum rebase_type parse_config_rebase(const char *key, const char *value,
 		int fatal)
 {
-	int v = git_parse_maybe_bool(value);
-
-	if (!v)
-		return REBASE_FALSE;
-	else if (v > 0)
-		return REBASE_TRUE;
-	else if (!strcmp(value, "preserve") || !strcmp(value, "p"))
-		return REBASE_PRESERVE;
-	else if (!strcmp(value, "merges") || !strcmp(value, "m"))
-		return REBASE_MERGES;
-	else if (!strcmp(value, "interactive") || !strcmp(value, "i"))
-		return REBASE_INTERACTIVE;
+	enum rebase_type v = rebase_parse_value(value);
+	if (v != REBASE_INVALID)
+		return v;
 
 	if (fatal)
 		die(_("Invalid value for %s: %s"), key, value);
@@ -96,12 +81,14 @@ static char *opt_signoff;
 static char *opt_squash;
 static char *opt_commit;
 static char *opt_edit;
+static char *cleanup_arg;
 static char *opt_ff;
 static char *opt_verify_signatures;
 static int opt_autostash = -1;
 static int config_autostash;
-static struct argv_array opt_strategies = ARGV_ARRAY_INIT;
-static struct argv_array opt_strategy_opts = ARGV_ARRAY_INIT;
+static int check_trust_level = 1;
+static struct strvec opt_strategies = STRVEC_INIT;
+static struct strvec opt_strategy_opts = STRVEC_INIT;
 static char *opt_gpg_sign;
 static int opt_allow_unrelated_histories;
 
@@ -121,6 +108,9 @@ static char *opt_update_shallow;
 static char *opt_refmap;
 static char *opt_ipv4;
 static char *opt_ipv6;
+static int opt_show_forced_updates = -1;
+static char *set_upstream;
+static struct strvec opt_fetch = STRVEC_INIT;
 
 static struct option pull_options[] = {
 	/* Shared options */
@@ -128,17 +118,17 @@ static struct option pull_options[] = {
 	OPT_PASSTHRU(0, "progress", &opt_progress, NULL,
 		N_("force progress reporting"),
 		PARSE_OPT_NOARG),
-	{ OPTION_CALLBACK, 0, "recurse-submodules",
+	OPT_CALLBACK_F(0, "recurse-submodules",
 		   &recurse_submodules, N_("on-demand"),
 		   N_("control for recursive fetching of submodules"),
-		   PARSE_OPT_OPTARG, option_fetch_parse_recurse_submodules },
+		   PARSE_OPT_OPTARG, option_fetch_parse_recurse_submodules),
 
 	/* Options passed to git-merge or git-rebase */
 	OPT_GROUP(N_("Options related to merging")),
-	{ OPTION_CALLBACK, 'r', "rebase", &opt_rebase,
+	OPT_CALLBACK_F('r', "rebase", &opt_rebase,
 	  "(false|true|merges|preserve|interactive)",
 	  N_("incorporate changes by rebasing rather than merging"),
-	  PARSE_OPT_OPTARG, parse_opt_rebase },
+	  PARSE_OPT_OPTARG, parse_opt_rebase),
 	OPT_PASSTHRU('n', NULL, &opt_diffstat, NULL,
 		N_("do not show a diffstat at the end of the merge"),
 		PARSE_OPT_NOARG | PARSE_OPT_NONEG),
@@ -152,7 +142,7 @@ static struct option pull_options[] = {
 		N_("add (at most <n>) entries from shortlog to merge commit message"),
 		PARSE_OPT_OPTARG),
 	OPT_PASSTHRU(0, "signoff", &opt_signoff, NULL,
-		N_("add Signed-off-by:"),
+		N_("add a Signed-off-by trailer"),
 		PARSE_OPT_OPTARG),
 	OPT_PASSTHRU(0, "squash", &opt_squash, NULL,
 		N_("create a single commit instead of doing a merge"),
@@ -163,6 +153,7 @@ static struct option pull_options[] = {
 	OPT_PASSTHRU(0, "edit", &opt_edit, NULL,
 		N_("edit message before committing"),
 		PARSE_OPT_NOARG),
+	OPT_CLEANUP(&cleanup_arg),
 	OPT_PASSTHRU(0, "ff", &opt_ff, NULL,
 		N_("allow fast-forward"),
 		PARSE_OPT_NOARG),
@@ -173,7 +164,7 @@ static struct option pull_options[] = {
 		N_("verify that the named commit has a valid GPG signature"),
 		PARSE_OPT_NOARG),
 	OPT_BOOL(0, "autostash", &opt_autostash,
-		N_("automatically stash/stash pop before and after rebase")),
+		N_("automatically stash/stash pop before and after")),
 	OPT_PASSTHRU_ARGV('s', "strategy", &opt_strategies, N_("strategy"),
 		N_("merge strategy to use"),
 		0),
@@ -217,6 +208,15 @@ static struct option pull_options[] = {
 	OPT_PASSTHRU(0, "depth", &opt_depth, N_("depth"),
 		N_("deepen history of shallow clone"),
 		0),
+	OPT_PASSTHRU_ARGV(0, "shallow-since", &opt_fetch, N_("time"),
+		N_("deepen history of shallow repository based on time"),
+		0),
+	OPT_PASSTHRU_ARGV(0, "shallow-exclude", &opt_fetch, N_("revision"),
+		N_("deepen history of shallow clone, excluding rev"),
+		0),
+	OPT_PASSTHRU_ARGV(0, "deepen", &opt_fetch, N_("n"),
+		N_("deepen history of shallow clone"),
+		0),
 	OPT_PASSTHRU(0, "unshallow", &opt_unshallow, NULL,
 		N_("convert to a complete repository"),
 		PARSE_OPT_NONEG | PARSE_OPT_NOARG),
@@ -226,11 +226,23 @@ static struct option pull_options[] = {
 	OPT_PASSTHRU(0, "refmap", &opt_refmap, N_("refmap"),
 		N_("specify fetch refmap"),
 		PARSE_OPT_NONEG),
+	OPT_PASSTHRU_ARGV('o', "server-option", &opt_fetch,
+		N_("server-specific"),
+		N_("option to transmit"),
+		0),
 	OPT_PASSTHRU('4',  "ipv4", &opt_ipv4, NULL,
 		N_("use IPv4 addresses only"),
 		PARSE_OPT_NOARG),
 	OPT_PASSTHRU('6',  "ipv6", &opt_ipv6, NULL,
 		N_("use IPv6 addresses only"),
+		PARSE_OPT_NOARG),
+	OPT_PASSTHRU_ARGV(0, "negotiation-tip", &opt_fetch, N_("revision"),
+		N_("report that we have only objects reachable from this object"),
+		0),
+	OPT_BOOL(0, "show-forced-updates", &opt_show_forced_updates,
+		 N_("check for forced-updates on all updated branches")),
+	OPT_PASSTHRU(0, "set-upstream", &set_upstream, NULL,
+		N_("set upstream for git pull/fetch"),
 		PARSE_OPT_NOARG),
 
 	OPT_END()
@@ -239,25 +251,25 @@ static struct option pull_options[] = {
 /**
  * Pushes "-q" or "-v" switches into arr to match the opt_verbosity level.
  */
-static void argv_push_verbosity(struct argv_array *arr)
+static void argv_push_verbosity(struct strvec *arr)
 {
 	int verbosity;
 
 	for (verbosity = opt_verbosity; verbosity > 0; verbosity--)
-		argv_array_push(arr, "-v");
+		strvec_push(arr, "-v");
 
 	for (verbosity = opt_verbosity; verbosity < 0; verbosity++)
-		argv_array_push(arr, "-q");
+		strvec_push(arr, "-q");
 }
 
 /**
  * Pushes "-f" switches into arr to match the opt_force level.
  */
-static void argv_push_force(struct argv_array *arr)
+static void argv_push_force(struct strvec *arr)
 {
 	int force = opt_force;
 	while (force-- > 0)
-		argv_array_push(arr, "-f");
+		strvec_push(arr, "-f");
 }
 
 /**
@@ -332,6 +344,21 @@ static enum rebase_type config_get_rebase(void)
 	if (!git_config_get_value("pull.rebase", &value))
 		return parse_config_rebase("pull.rebase", value, 1);
 
+	if (opt_verbosity >= 0 && !opt_ff) {
+		warning(_("Pulling without specifying how to reconcile divergent branches is\n"
+			"discouraged. You can squelch this message by running one of the following\n"
+			"commands sometime before your next pull:\n"
+			"\n"
+			"  git config pull.rebase false  # merge (the default strategy)\n"
+			"  git config pull.rebase true   # rebase\n"
+			"  git config pull.ff only       # fast-forward only\n"
+			"\n"
+			"You can replace \"git config\" with \"git config --global\" to set a default\n"
+			"preference for all repositories. You can also pass --rebase, --no-rebase,\n"
+			"or --ff-only on the command line to override the configured default per\n"
+			"invocation.\n"));
+	}
+
 	return REBASE_FALSE;
 }
 
@@ -340,6 +367,8 @@ static enum rebase_type config_get_rebase(void)
  */
 static int git_pull_config(const char *var, const char *value, void *cb)
 {
+	int status;
+
 	if (!strcmp(var, "rebase.autostash")) {
 		config_autostash = git_config_bool(var, value);
 		return 0;
@@ -347,7 +376,14 @@ static int git_pull_config(const char *var, const char *value, void *cb)
 		recurse_submodules = git_config_bool(var, value) ?
 			RECURSE_SUBMODULES_ON : RECURSE_SUBMODULES_OFF;
 		return 0;
+	} else if (!strcmp(var, "gpg.mintrustlevel")) {
+		check_trust_level = 0;
 	}
+
+	status = git_gpg_config(var, value, cb);
+	if (status)
+		return status;
+
 	return git_default_config(var, value, cb);
 }
 
@@ -364,9 +400,10 @@ static void get_merge_heads(struct oid_array *merge_heads)
 
 	fp = xfopen(filename, "r");
 	while (strbuf_getline_lf(&sb, fp) != EOF) {
-		if (get_oid_hex(sb.buf, &oid))
-			continue;  /* invalid line: does not start with SHA1 */
-		if (starts_with(sb.buf + GIT_SHA1_HEXSZ, "\tnot-for-merge\t"))
+		const char *p;
+		if (parse_oid_hex(sb.buf, &oid, &p))
+			continue;  /* invalid line: does not start with object ID */
+		if (starts_with(p, "\tnot-for-merge\t"))
 			continue;  /* ref is not-for-merge */
 		oid_array_append(merge_heads, &oid);
 	}
@@ -486,68 +523,75 @@ static void parse_repo_refspecs(int argc, const char **argv, const char **repo,
  */
 static int run_fetch(const char *repo, const char **refspecs)
 {
-	struct argv_array args = ARGV_ARRAY_INIT;
+	struct strvec args = STRVEC_INIT;
 	int ret;
 
-	argv_array_pushl(&args, "fetch", "--update-head-ok", NULL);
+	strvec_pushl(&args, "fetch", "--update-head-ok", NULL);
 
 	/* Shared options */
 	argv_push_verbosity(&args);
 	if (opt_progress)
-		argv_array_push(&args, opt_progress);
+		strvec_push(&args, opt_progress);
 
 	/* Options passed to git-fetch */
 	if (opt_all)
-		argv_array_push(&args, opt_all);
+		strvec_push(&args, opt_all);
 	if (opt_append)
-		argv_array_push(&args, opt_append);
+		strvec_push(&args, opt_append);
 	if (opt_upload_pack)
-		argv_array_push(&args, opt_upload_pack);
+		strvec_push(&args, opt_upload_pack);
 	argv_push_force(&args);
 	if (opt_tags)
-		argv_array_push(&args, opt_tags);
+		strvec_push(&args, opt_tags);
 	if (opt_prune)
-		argv_array_push(&args, opt_prune);
+		strvec_push(&args, opt_prune);
 	if (recurse_submodules != RECURSE_SUBMODULES_DEFAULT)
 		switch (recurse_submodules) {
 		case RECURSE_SUBMODULES_ON:
-			argv_array_push(&args, "--recurse-submodules=on");
+			strvec_push(&args, "--recurse-submodules=on");
 			break;
 		case RECURSE_SUBMODULES_OFF:
-			argv_array_push(&args, "--recurse-submodules=no");
+			strvec_push(&args, "--recurse-submodules=no");
 			break;
 		case RECURSE_SUBMODULES_ON_DEMAND:
-			argv_array_push(&args, "--recurse-submodules=on-demand");
+			strvec_push(&args, "--recurse-submodules=on-demand");
 			break;
 		default:
 			BUG("submodule recursion option not understood");
 		}
 	if (max_children)
-		argv_array_push(&args, max_children);
+		strvec_push(&args, max_children);
 	if (opt_dry_run)
-		argv_array_push(&args, "--dry-run");
+		strvec_push(&args, "--dry-run");
 	if (opt_keep)
-		argv_array_push(&args, opt_keep);
+		strvec_push(&args, opt_keep);
 	if (opt_depth)
-		argv_array_push(&args, opt_depth);
+		strvec_push(&args, opt_depth);
 	if (opt_unshallow)
-		argv_array_push(&args, opt_unshallow);
+		strvec_push(&args, opt_unshallow);
 	if (opt_update_shallow)
-		argv_array_push(&args, opt_update_shallow);
+		strvec_push(&args, opt_update_shallow);
 	if (opt_refmap)
-		argv_array_push(&args, opt_refmap);
+		strvec_push(&args, opt_refmap);
 	if (opt_ipv4)
-		argv_array_push(&args, opt_ipv4);
+		strvec_push(&args, opt_ipv4);
 	if (opt_ipv6)
-		argv_array_push(&args, opt_ipv6);
+		strvec_push(&args, opt_ipv6);
+	if (opt_show_forced_updates > 0)
+		strvec_push(&args, "--show-forced-updates");
+	else if (opt_show_forced_updates == 0)
+		strvec_push(&args, "--no-show-forced-updates");
+	if (set_upstream)
+		strvec_push(&args, set_upstream);
+	strvec_pushv(&args, opt_fetch.v);
 
 	if (repo) {
-		argv_array_push(&args, repo);
-		argv_array_pushv(&args, refspecs);
+		strvec_push(&args, repo);
+		strvec_pushv(&args, refspecs);
 	} else if (*refspecs)
 		BUG("refspecs without repo?");
-	ret = run_command_v_opt(args.argv, RUN_GIT_CMD);
-	argv_array_clear(&args);
+	ret = run_command_v_opt(args.v, RUN_GIT_CMD);
+	strvec_clear(&args);
 	return ret;
 }
 
@@ -565,7 +609,8 @@ static int pull_into_void(const struct object_id *merge_head,
 			die(_("unable to access commit %s"),
 			    oid_to_hex(merge_head));
 
-		verify_merge_signature(commit, opt_verbosity);
+		verify_merge_signature(commit, opt_verbosity,
+				       check_trust_level);
 	}
 
 	/*
@@ -591,8 +636,8 @@ static int rebase_submodules(void)
 
 	cp.git_cmd = 1;
 	cp.no_stdin = 1;
-	argv_array_pushl(&cp.args, "submodule", "update",
-				   "--recursive", "--rebase", NULL);
+	strvec_pushl(&cp.args, "submodule", "update",
+		     "--recursive", "--rebase", NULL);
 	argv_push_verbosity(&cp.args);
 
 	return run_command(&cp);
@@ -604,8 +649,8 @@ static int update_submodules(void)
 
 	cp.git_cmd = 1;
 	cp.no_stdin = 1;
-	argv_array_pushl(&cp.args, "submodule", "update",
-				   "--recursive", "--checkout", NULL);
+	strvec_pushl(&cp.args, "submodule", "update",
+		     "--recursive", "--checkout", NULL);
 	argv_push_verbosity(&cp.args);
 
 	return run_command(&cp);
@@ -617,42 +662,48 @@ static int update_submodules(void)
 static int run_merge(void)
 {
 	int ret;
-	struct argv_array args = ARGV_ARRAY_INIT;
+	struct strvec args = STRVEC_INIT;
 
-	argv_array_pushl(&args, "merge", NULL);
+	strvec_pushl(&args, "merge", NULL);
 
 	/* Shared options */
 	argv_push_verbosity(&args);
 	if (opt_progress)
-		argv_array_push(&args, opt_progress);
+		strvec_push(&args, opt_progress);
 
 	/* Options passed to git-merge */
 	if (opt_diffstat)
-		argv_array_push(&args, opt_diffstat);
+		strvec_push(&args, opt_diffstat);
 	if (opt_log)
-		argv_array_push(&args, opt_log);
+		strvec_push(&args, opt_log);
 	if (opt_signoff)
-		argv_array_push(&args, opt_signoff);
+		strvec_push(&args, opt_signoff);
 	if (opt_squash)
-		argv_array_push(&args, opt_squash);
+		strvec_push(&args, opt_squash);
 	if (opt_commit)
-		argv_array_push(&args, opt_commit);
+		strvec_push(&args, opt_commit);
 	if (opt_edit)
-		argv_array_push(&args, opt_edit);
+		strvec_push(&args, opt_edit);
+	if (cleanup_arg)
+		strvec_pushf(&args, "--cleanup=%s", cleanup_arg);
 	if (opt_ff)
-		argv_array_push(&args, opt_ff);
+		strvec_push(&args, opt_ff);
 	if (opt_verify_signatures)
-		argv_array_push(&args, opt_verify_signatures);
-	argv_array_pushv(&args, opt_strategies.argv);
-	argv_array_pushv(&args, opt_strategy_opts.argv);
+		strvec_push(&args, opt_verify_signatures);
+	strvec_pushv(&args, opt_strategies.v);
+	strvec_pushv(&args, opt_strategy_opts.v);
 	if (opt_gpg_sign)
-		argv_array_push(&args, opt_gpg_sign);
+		strvec_push(&args, opt_gpg_sign);
+	if (opt_autostash == 0)
+		strvec_push(&args, "--no-autostash");
+	else if (opt_autostash == 1)
+		strvec_push(&args, "--autostash");
 	if (opt_allow_unrelated_histories > 0)
-		argv_array_push(&args, "--allow-unrelated-histories");
+		strvec_push(&args, "--allow-unrelated-histories");
 
-	argv_array_push(&args, "FETCH_HEAD");
-	ret = run_command_v_opt(args.argv, RUN_GIT_CMD);
-	argv_array_clear(&args);
+	strvec_push(&args, "FETCH_HEAD");
+	ret = run_command_v_opt(args.v, RUN_GIT_CMD);
+	strvec_clear(&args);
 	return ret;
 }
 
@@ -749,13 +800,13 @@ static int get_rebase_fork_point(struct object_id *fork_point, const char *repo,
 	if (!remote_branch)
 		return -1;
 
-	argv_array_pushl(&cp.args, "merge-base", "--fork-point",
-			remote_branch, curr_branch->name, NULL);
+	strvec_pushl(&cp.args, "merge-base", "--fork-point",
+		     remote_branch, curr_branch->name, NULL);
 	cp.no_stdin = 1;
 	cp.no_stderr = 1;
 	cp.git_cmd = 1;
 
-	ret = capture_command(&cp, &sb, GIT_SHA1_HEXSZ);
+	ret = capture_command(&cp, &sb, GIT_MAX_HEXSZ);
 	if (ret)
 		goto cleanup;
 
@@ -800,7 +851,7 @@ static int get_octopus_merge_base(struct object_id *merge_base,
 }
 
 /**
- * Given the current HEAD SHA1, the merge head returned from git-fetch and the
+ * Given the current HEAD oid, the merge head returned from git-fetch and the
  * fork point calculated by get_rebase_fork_point(), runs git-rebase with the
  * appropriate arguments and returns its exit status.
  */
@@ -810,48 +861,48 @@ static int run_rebase(const struct object_id *curr_head,
 {
 	int ret;
 	struct object_id oct_merge_base;
-	struct argv_array args = ARGV_ARRAY_INIT;
+	struct strvec args = STRVEC_INIT;
 
 	if (!get_octopus_merge_base(&oct_merge_base, curr_head, merge_head, fork_point))
 		if (!is_null_oid(fork_point) && oideq(&oct_merge_base, fork_point))
 			fork_point = NULL;
 
-	argv_array_push(&args, "rebase");
+	strvec_push(&args, "rebase");
 
 	/* Shared options */
 	argv_push_verbosity(&args);
 
 	/* Options passed to git-rebase */
 	if (opt_rebase == REBASE_MERGES)
-		argv_array_push(&args, "--rebase-merges");
+		strvec_push(&args, "--rebase-merges");
 	else if (opt_rebase == REBASE_PRESERVE)
-		argv_array_push(&args, "--preserve-merges");
+		strvec_push(&args, "--preserve-merges");
 	else if (opt_rebase == REBASE_INTERACTIVE)
-		argv_array_push(&args, "--interactive");
+		strvec_push(&args, "--interactive");
 	if (opt_diffstat)
-		argv_array_push(&args, opt_diffstat);
-	argv_array_pushv(&args, opt_strategies.argv);
-	argv_array_pushv(&args, opt_strategy_opts.argv);
+		strvec_push(&args, opt_diffstat);
+	strvec_pushv(&args, opt_strategies.v);
+	strvec_pushv(&args, opt_strategy_opts.v);
 	if (opt_gpg_sign)
-		argv_array_push(&args, opt_gpg_sign);
+		strvec_push(&args, opt_gpg_sign);
 	if (opt_autostash == 0)
-		argv_array_push(&args, "--no-autostash");
+		strvec_push(&args, "--no-autostash");
 	else if (opt_autostash == 1)
-		argv_array_push(&args, "--autostash");
+		strvec_push(&args, "--autostash");
 	if (opt_verify_signatures &&
 	    !strcmp(opt_verify_signatures, "--verify-signatures"))
 		warning(_("ignoring --verify-signatures for rebase"));
 
-	argv_array_push(&args, "--onto");
-	argv_array_push(&args, oid_to_hex(merge_head));
+	strvec_push(&args, "--onto");
+	strvec_push(&args, oid_to_hex(merge_head));
 
 	if (fork_point && !is_null_oid(fork_point))
-		argv_array_push(&args, oid_to_hex(fork_point));
+		strvec_push(&args, oid_to_hex(fork_point));
 	else
-		argv_array_push(&args, oid_to_hex(merge_head));
+		strvec_push(&args, oid_to_hex(merge_head));
 
-	ret = run_command_v_opt(args.argv, RUN_GIT_CMD);
-	argv_array_clear(&args);
+	ret = run_command_v_opt(args.v, RUN_GIT_CMD);
+	strvec_clear(&args);
 	return ret;
 }
 
@@ -870,6 +921,13 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 
 	argc = parse_options(argc, argv, prefix, pull_options, pull_usage, 0);
 
+	if (cleanup_arg)
+		/*
+		 * this only checks the validity of cleanup_arg; we don't need
+		 * a valid value for use_editor
+		 */
+		get_cleanup_mode(cleanup_arg, 0);
+
 	parse_repo_refspecs(argc, argv, &repo, &refspecs);
 
 	if (!opt_ff)
@@ -886,9 +944,6 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 
 	if (get_oid("HEAD", &orig_head))
 		oidclr(&orig_head);
-
-	if (!opt_rebase && opt_autostash != -1)
-		die(_("--[no-]autostash option is only valid with --rebase."));
 
 	autostash = config_autostash;
 	if (opt_rebase) {
@@ -955,6 +1010,7 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 
 	if (opt_rebase) {
 		int ret = 0;
+		int ran_ff = 0;
 		if ((recurse_submodules == RECURSE_SUBMODULES_ON ||
 		     recurse_submodules == RECURSE_SUBMODULES_ON_DEMAND) &&
 		    submodule_touches_in_range(the_repository, &rebase_fork_point, &curr_head))
@@ -968,13 +1024,17 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 			commit_list_insert(head, &list);
 			merge_head = lookup_commit_reference(the_repository,
 							     &merge_heads.oid[0]);
-			if (is_descendant_of(merge_head, list)) {
+			if (repo_is_descendant_of(the_repository,
+						  merge_head, list)) {
 				/* we can fast-forward this without invoking rebase */
 				opt_ff = "--ff-only";
+				ran_ff = 1;
 				ret = run_merge();
 			}
+			free_commit_list(list);
 		}
-		ret = run_rebase(&curr_head, merge_heads.oid, &rebase_fork_point);
+		if (!ran_ff)
+			ret = run_rebase(&curr_head, merge_heads.oid, &rebase_fork_point);
 
 		if (!ret && (recurse_submodules == RECURSE_SUBMODULES_ON ||
 			     recurse_submodules == RECURSE_SUBMODULES_ON_DEMAND))

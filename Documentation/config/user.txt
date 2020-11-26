@@ -1,12 +1,24 @@
-user.email::
-	Your email address to be recorded in any newly created commits.
-	Can be overridden by the `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_EMAIL`, and
-	`EMAIL` environment variables.  See linkgit:git-commit-tree[1].
-
 user.name::
-	Your full name to be recorded in any newly created commits.
-	Can be overridden by the `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME`
-	environment variables.  See linkgit:git-commit-tree[1].
+user.email::
+author.name::
+author.email::
+committer.name::
+committer.email::
+	The `user.name` and `user.email` variables determine what ends
+	up in the `author` and `committer` field of commit
+	objects.
+	If you need the `author` or `committer` to be different, the
+	`author.name`, `author.email`, `committer.name` or
+	`committer.email` variables can be set.
+	Also, all of these can be overridden by the `GIT_AUTHOR_NAME`,
+	`GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`,
+	`GIT_COMMITTER_EMAIL` and `EMAIL` environment variables.
++
+Note that the `name` forms of these variables conventionally refer to
+some form of a personal name.  See linkgit:git-commit[1] and the
+environment variables section of linkgit:git[1] for more information on
+these settings and the `credential.username` option if you're looking
+for authentication credentials instead.
 
 user.useConfigOnly::
 	Instruct Git to avoid trying to guess defaults for `user.email`

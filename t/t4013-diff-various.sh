@@ -6,9 +6,7 @@
 test_description='Various diff formatting options'
 
 . ./test-lib.sh
-
-LF='
-'
+. "$TEST_DIRECTORY"/diff-lib.sh
 
 test_expect_success setup '
 
@@ -98,6 +96,21 @@ test_expect_success setup '
 	git commit -m "update mode" &&
 	git checkout -f master &&
 
+	GIT_AUTHOR_DATE="2006-06-26 00:06:00 +0000" &&
+	GIT_COMMITTER_DATE="2006-06-26 00:06:00 +0000" &&
+	export GIT_AUTHOR_DATE GIT_COMMITTER_DATE &&
+	git checkout -b note initial &&
+	git update-index --chmod=+x file2 &&
+	git commit -m "update mode (file2)" &&
+	git notes add -m "note" &&
+	git checkout -f master &&
+
+	# Same merge as master, but with parents reversed. Hide it in a
+	# pseudo-ref to avoid impacting tests with --all.
+	commit=$(echo reverse |
+		 git commit-tree -p master^2 -p master^1 master^{tree}) &&
+	git update-ref REVERSE $commit &&
+
 	git config diff.renames false &&
 
 	git show-branch
@@ -116,6 +129,48 @@ test_expect_success setup '
  *   [master~2] Second
 +*++ [initial] Initial
 EOF
+
+process_diffs () {
+	perl -e '
+		my $oid_length = length($ARGV[0]);
+		my $x40 = "[0-9a-f]{40}";
+		my $xab = "[0-9a-f]{4,16}";
+		my $orx = "[0-9a-f]" x $oid_length;
+
+		sub munge_oid {
+			my ($oid) = @_;
+			my $x;
+
+			return "" unless length $oid;
+
+			if ($oid =~ /^(100644|100755|120000)$/) {
+				return $oid;
+			}
+
+			if ($oid =~ /^0*$/) {
+				$x = "0";
+			} else {
+				$x = "f";
+			}
+
+			if (length($oid) == 40) {
+				return $x x $oid_length;
+			} else {
+				return $x x length($oid);
+			}
+		}
+
+		while (<STDIN>) {
+			s/($orx)/munge_oid($1)/ge;
+			s/From ($x40)( |\))/"From " . munge_oid($1) . $2/ge;
+			s/commit ($x40)($| \(from )($x40?)/"commit " .  munge_oid($1) . $2 . munge_oid($3)/ge;
+			s/\b($x40)( |\.\.|$)/munge_oid($1) . $2/ge;
+			s/^($x40)($| )/munge_oid($1) . $2/e;
+			s/($xab)(\.\.|,| |\.\.\.|$)/munge_oid($1) . $2/ge;
+			print;
+		}
+	' "$ZERO_OID" <"$1"
+}
 
 V=$(git version | sed -e 's/^git version //' -e 's/\./\\./g')
 while read magic cmd
@@ -155,13 +210,15 @@ do
 		} >"$actual" &&
 		if test -f "$expect"
 		then
+			process_diffs "$actual" >actual &&
+			process_diffs "$expect" >expect &&
 			case $cmd in
 			*format-patch* | *-stat*)
-				test_i18ncmp "$expect" "$actual";;
+				test_i18ncmp expect actual;;
 			*)
-				test_cmp "$expect" "$actual";;
+				test_cmp expect actual;;
 			esac &&
-			rm -f "$actual"
+			rm -f "$actual" actual expect
 		else
 			# this is to help developing new tests.
 			cp "$actual" "$expect"
@@ -183,6 +240,9 @@ diff-tree --root -r --abbrev=4 initial
 :noellipses diff-tree --root -r --abbrev=4 initial
 diff-tree -p initial
 diff-tree --root -p initial
+diff-tree --root -p --abbrev=10 initial
+diff-tree --root -p --full-index initial
+diff-tree --root -p --full-index --abbrev=10 initial
 diff-tree --patch-with-stat initial
 diff-tree --root --patch-with-stat initial
 diff-tree --patch-with-raw initial
@@ -239,6 +299,8 @@ diff-tree --cc --stat --summary master
 # stat summary should show the diffstat and summary with the first parent
 diff-tree -c --stat --summary side
 diff-tree --cc --stat --summary side
+diff-tree --cc --shortstat master
+diff-tree --cc --summary REVERSE
 # improved by Timo's patch
 diff-tree --cc --patch-with-stat master
 # improved by Timo's patch
@@ -257,6 +319,9 @@ log --root --patch-with-stat --summary master
 log --root -c --patch-with-stat --summary master
 # improved by Timo's patch
 log --root --cc --patch-with-stat --summary master
+log --no-diff-merges -p --first-parent master
+log --diff-merges=off -p --first-parent master
+log --first-parent --diff-merges=off -p master
 log -p --first-parent master
 log -m -p --first-parent master
 log -m -p master
@@ -269,6 +334,7 @@ log -SF master --max-count=2
 log -GF master
 log -GF -p master
 log -GF -p --pickaxe-all master
+log -IA -IB -I1 -I2 -p master
 log --decorate --all
 log --decorate=full --all
 
@@ -330,6 +396,8 @@ format-patch --inline --stdout initial..master^^
 format-patch --stdout --cover-letter -n initial..master^
 
 diff --abbrev initial..side
+diff -U initial..side
+diff -U1 initial..side
 diff -r initial..side
 diff --stat initial..side
 diff -r --stat initial..side
@@ -350,6 +418,7 @@ diff --line-prefix=abc master master^ side
 diff --dirstat master~1 master~2
 diff --dirstat initial rearrange
 diff --dirstat-by-file initial rearrange
+diff --dirstat --cc master~1 master
 # No-index --abbrev and --no-abbrev
 diff --raw initial
 :noellipses diff --raw initial
@@ -364,6 +433,9 @@ diff --no-index --raw --no-abbrev dir2 dir
 
 diff-tree --pretty --root --stat --compact-summary initial
 diff-tree --pretty -R --root --stat --compact-summary initial
+diff-tree --pretty note
+diff-tree --pretty --notes note
+diff-tree --format=%N note
 diff-tree --stat --compact-summary initial mode
 diff-tree -R --stat --compact-summary initial mode
 EOF
@@ -375,16 +447,22 @@ test_expect_success 'log -S requires an argument' '
 test_expect_success 'diff --cached on unborn branch' '
 	echo ref: refs/heads/unborn >.git/HEAD &&
 	git diff --cached >result &&
-	test_cmp "$TEST_DIRECTORY/t4013/diff.diff_--cached" result
+	process_diffs result >actual &&
+	process_diffs "$TEST_DIRECTORY/t4013/diff.diff_--cached" >expected &&
+	test_cmp expected actual
 '
 
 test_expect_success 'diff --cached -- file on unborn branch' '
 	git diff --cached -- file0 >result &&
-	test_cmp "$TEST_DIRECTORY/t4013/diff.diff_--cached_--_file0" result
+	process_diffs result >actual &&
+	process_diffs "$TEST_DIRECTORY/t4013/diff.diff_--cached_--_file0" >expected &&
+	test_cmp expected actual
 '
 test_expect_success 'diff --line-prefix with spaces' '
 	git diff --line-prefix="| | | " --cached -- file0 >result &&
-	test_cmp "$TEST_DIRECTORY/t4013/diff.diff_--line-prefix_--cached_--_file0" result
+	process_diffs result >actual &&
+	process_diffs "$TEST_DIRECTORY/t4013/diff.diff_--line-prefix_--cached_--_file0" >expected &&
+	test_cmp expected actual
 '
 
 test_expect_success 'diff-tree --stdin with log formatting' '
@@ -395,6 +473,45 @@ test_expect_success 'diff-tree --stdin with log formatting' '
 	EOF
 	git rev-list master | git diff-tree --stdin --format=%s -s >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'diff -I<regex>: setup' '
+	git checkout master &&
+	test_seq 50 >file0 &&
+	git commit -m "Set up -I<regex> test file" file0 &&
+	test_seq 50 | sed -e "s/13/ten and three/" -e "/7\$/d" >file0 &&
+	echo >>file0
+'
+test_expect_success 'diff -I<regex>' '
+	git diff --ignore-blank-lines -I"ten.*e" -I"^[124-9]" >actual &&
+	cat >expect <<-\EOF &&
+	diff --git a/file0 b/file0
+	--- a/file0
+	+++ b/file0
+	@@ -34,7 +31,6 @@
+	 34
+	 35
+	 36
+	-37
+	 38
+	 39
+	 40
+	EOF
+	compare_diff_patch expect actual
+'
+
+test_expect_success 'diff -I<regex> --stat' '
+	git diff --stat --ignore-blank-lines -I"ten.*e" -I"^[124-9]" >actual &&
+	cat >expect <<-\EOF &&
+	 file0 | 1 -
+	 1 file changed, 1 deletion(-)
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'diff -I<regex>: detect malformed regex' '
+	test_expect_code 129 git diff --ignore-matching-lines="^[124-9" 2>error &&
+	test_i18ngrep "invalid regex given to -I: " error
 '
 
 test_done

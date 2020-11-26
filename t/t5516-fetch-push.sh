@@ -747,42 +747,42 @@ test_expect_success 'deletion of a non-existent ref alone does trigger post-rece
 '
 
 test_expect_success 'mixed ref updates, deletes, invalid deletes trigger hooks with correct input' '
-	mk_test_with_hooks testrepo heads/master heads/next heads/pu &&
+	mk_test_with_hooks testrepo heads/master heads/next heads/seen &&
 	orgmaster=$(cd testrepo && git show-ref -s --verify refs/heads/master) &&
 	newmaster=$(git show-ref -s --verify refs/heads/master) &&
 	orgnext=$(cd testrepo && git show-ref -s --verify refs/heads/next) &&
 	newnext=$ZERO_OID &&
-	orgpu=$(cd testrepo && git show-ref -s --verify refs/heads/pu) &&
-	newpu=$(git show-ref -s --verify refs/heads/master) &&
+	orgseen=$(cd testrepo && git show-ref -s --verify refs/heads/seen) &&
+	newseen=$(git show-ref -s --verify refs/heads/master) &&
 	git push testrepo refs/heads/master:refs/heads/master \
-	    refs/heads/master:refs/heads/pu :refs/heads/next \
+	    refs/heads/master:refs/heads/seen :refs/heads/next \
 	    :refs/heads/nonexistent &&
 	(
 		cd testrepo/.git &&
 		cat >pre-receive.expect <<-EOF &&
 		$orgmaster $newmaster refs/heads/master
 		$orgnext $newnext refs/heads/next
-		$orgpu $newpu refs/heads/pu
+		$orgseen $newseen refs/heads/seen
 		$ZERO_OID $ZERO_OID refs/heads/nonexistent
 		EOF
 
 		cat >update.expect <<-EOF &&
 		refs/heads/master $orgmaster $newmaster
 		refs/heads/next $orgnext $newnext
-		refs/heads/pu $orgpu $newpu
+		refs/heads/seen $orgseen $newseen
 		refs/heads/nonexistent $ZERO_OID $ZERO_OID
 		EOF
 
 		cat >post-receive.expect <<-EOF &&
 		$orgmaster $newmaster refs/heads/master
 		$orgnext $newnext refs/heads/next
-		$orgpu $newpu refs/heads/pu
+		$orgseen $newseen refs/heads/seen
 		EOF
 
 		cat >post-update.expect <<-EOF &&
 		refs/heads/master
 		refs/heads/next
-		refs/heads/pu
+		refs/heads/seen
 		EOF
 
 		test_cmp pre-receive.expect pre-receive.actual &&
@@ -1039,7 +1039,7 @@ test_force_fetch_tag "annotated tag" "-f -a -m'tag message'"
 test_expect_success 'push --porcelain' '
 	mk_empty testrepo &&
 	echo >.git/foo  "To testrepo" &&
-	echo >>.git/foo "*	refs/heads/master:refs/remotes/origin/master	[new branch]"  &&
+	echo >>.git/foo "*	refs/heads/master:refs/remotes/origin/master	[new reference]"  &&
 	echo >>.git/foo "Done" &&
 	git push >.git/bar --porcelain  testrepo refs/heads/master:refs/remotes/origin/master &&
 	(
@@ -1066,6 +1066,7 @@ test_expect_success 'push --porcelain rejected' '
 
 	echo >.git/foo  "To testrepo"  &&
 	echo >>.git/foo "!	refs/heads/master:refs/heads/master	[remote rejected] (branch is currently checked out)" &&
+	echo >>.git/foo "Done" &&
 
 	test_must_fail git push >.git/bar --porcelain  testrepo refs/heads/master:refs/heads/master &&
 	test_cmp .git/foo .git/bar
@@ -1147,8 +1148,12 @@ test_expect_success 'fetch exact SHA1' '
 		git prune &&
 		test_must_fail git cat-file -t $the_commit &&
 
+		# Some protocol versions (e.g. 2) support fetching
+		# unadvertised objects, so restrict this test to v0.
+
 		# fetching the hidden object should fail by default
-		test_must_fail git fetch -v ../testrepo $the_commit:refs/heads/copy 2>err &&
+		test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+			git fetch -v ../testrepo $the_commit:refs/heads/copy 2>err &&
 		test_i18ngrep "Server does not allow request for unadvertised object" err &&
 		test_must_fail git rev-parse --verify refs/heads/copy &&
 
@@ -1204,7 +1209,10 @@ do
 		mk_empty shallow &&
 		(
 			cd shallow &&
-			test_must_fail git fetch --depth=1 ../testrepo/.git $SHA1 &&
+			# Some protocol versions (e.g. 2) support fetching
+			# unadvertised objects, so restrict this test to v0.
+			test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+				git fetch --depth=1 ../testrepo/.git $SHA1 &&
 			git --git-dir=../testrepo/.git config uploadpack.allowreachablesha1inwant true &&
 			git fetch --depth=1 ../testrepo/.git $SHA1 &&
 			git cat-file commit $SHA1
@@ -1232,15 +1240,21 @@ do
 		mk_empty shallow &&
 		(
 			cd shallow &&
-			test_must_fail ok=sigpipe git fetch ../testrepo/.git $SHA1_3 &&
-			test_must_fail ok=sigpipe git fetch ../testrepo/.git $SHA1_1 &&
+			# Some protocol versions (e.g. 2) support fetching
+			# unadvertised objects, so restrict this test to v0.
+			test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+				git fetch ../testrepo/.git $SHA1_3 &&
+			test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+				git fetch ../testrepo/.git $SHA1_1 &&
 			git --git-dir=../testrepo/.git config uploadpack.allowreachablesha1inwant true &&
 			git fetch ../testrepo/.git $SHA1_1 &&
 			git cat-file commit $SHA1_1 &&
 			test_must_fail git cat-file commit $SHA1_2 &&
 			git fetch ../testrepo/.git $SHA1_2 &&
 			git cat-file commit $SHA1_2 &&
-			test_must_fail ok=sigpipe git fetch ../testrepo/.git $SHA1_3
+			test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+				git fetch ../testrepo/.git $SHA1_3 2>err &&
+			test_i18ngrep "remote error:.*not our ref.*$SHA1_3\$" err
 		)
 	'
 done
@@ -1270,6 +1284,17 @@ test_expect_success 'fetch follows tags by default' '
 		git for-each-ref >../actual
 	) &&
 	test_cmp expect actual
+'
+
+test_expect_success 'peeled advertisements are not considered ref tips' '
+	mk_empty testrepo &&
+	git -C testrepo commit --allow-empty -m one &&
+	git -C testrepo commit --allow-empty -m two &&
+	git -C testrepo tag -m foo mytag HEAD^ &&
+	oid=$(git -C testrepo rev-parse mytag^{commit}) &&
+	test_must_fail env GIT_TEST_PROTOCOL_VERSION=0 \
+		git fetch testrepo $oid 2>err &&
+	test_i18ngrep "Server does not allow request for unadvertised object" err
 '
 
 test_expect_success 'pushing a specific ref applies remote.$name.push as refmap' '
@@ -1370,7 +1395,7 @@ test_expect_success 'push does not follow tags by default' '
 	test_cmp expect actual
 '
 
-test_expect_success 'push --follow-tag only pushes relevant tags' '
+test_expect_success 'push --follow-tags only pushes relevant tags' '
 	mk_test testrepo heads/master &&
 	rm -fr src dst &&
 	git init src &&
@@ -1384,7 +1409,7 @@ test_expect_success 'push --follow-tag only pushes relevant tags' '
 		git tag -m "future" future &&
 		git checkout master &&
 		git for-each-ref refs/heads/master refs/tags/tag >../expect &&
-		git push --follow-tag ../dst master
+		git push --follow-tags ../dst master
 	) &&
 	(
 		cd dst &&
@@ -1686,6 +1711,17 @@ test_expect_success 'updateInstead with push-to-checkout hook' '
 		git diff --cached --quiet &&
 		test $(git -C .. rev-parse HEAD) = $(git rev-parse HEAD)
 	)
+'
+
+test_expect_success 'denyCurrentBranch and worktrees' '
+	git worktree add new-wt &&
+	git clone . cloned &&
+	test_commit -C cloned first &&
+	test_config receive.denyCurrentBranch refuse &&
+	test_must_fail git -C cloned push origin HEAD:new-wt &&
+	test_config receive.denyCurrentBranch updateInstead &&
+	git -C cloned push origin HEAD:new-wt &&
+	test_must_fail git -C cloned push --delete origin new-wt
 '
 
 test_done

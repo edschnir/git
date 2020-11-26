@@ -67,7 +67,7 @@ static int already_written(struct bulk_checkin_state *state, struct object_id *o
 	int i;
 
 	/* The object may already exist in the repository */
-	if (has_sha1_file(oid->hash))
+	if (has_object_file(oid))
 		return 1;
 
 	/* Might want to keep the list sorted */
@@ -197,7 +197,7 @@ static int deflate_to_pack(struct bulk_checkin_state *state,
 	git_hash_ctx ctx;
 	unsigned char obuf[16384];
 	unsigned header_len;
-	struct hashfile_checkpoint checkpoint;
+	struct hashfile_checkpoint checkpoint = {0};
 	struct pack_idx_entry *idx = NULL;
 
 	seekback = lseek(fd, 0, SEEK_CUR);

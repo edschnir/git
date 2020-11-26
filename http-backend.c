@@ -9,7 +9,7 @@
 #include "run-command.h"
 #include "string-list.h"
 #include "url.h"
-#include "argv-array.h"
+#include "strvec.h"
 #include "packfile.h"
 #include "object-store.h"
 #include "protocol.h"
@@ -477,10 +477,10 @@ static void run_service(const char **argv, int buffer_input)
 		host = "(none)";
 
 	if (!getenv("GIT_COMMITTER_NAME"))
-		argv_array_pushf(&cld.env_array, "GIT_COMMITTER_NAME=%s", user);
+		strvec_pushf(&cld.env_array, "GIT_COMMITTER_NAME=%s", user);
 	if (!getenv("GIT_COMMITTER_EMAIL"))
-		argv_array_pushf(&cld.env_array,
-				 "GIT_COMMITTER_EMAIL=%s@http.%s", user, host);
+		strvec_pushf(&cld.env_array,
+			     "GIT_COMMITTER_EMAIL=%s@http.%s", user, host);
 
 	cld.argv = argv;
 	if (buffer_input || gzipped_request || req_len >= 0)
@@ -711,8 +711,11 @@ static struct service_cmd {
 	{"GET", "/objects/info/http-alternates$", get_text_file},
 	{"GET", "/objects/info/packs$", get_info_packs},
 	{"GET", "/objects/[0-9a-f]{2}/[0-9a-f]{38}$", get_loose_object},
+	{"GET", "/objects/[0-9a-f]{2}/[0-9a-f]{62}$", get_loose_object},
 	{"GET", "/objects/pack/pack-[0-9a-f]{40}\\.pack$", get_pack_file},
+	{"GET", "/objects/pack/pack-[0-9a-f]{64}\\.pack$", get_pack_file},
 	{"GET", "/objects/pack/pack-[0-9a-f]{40}\\.idx$", get_idx_file},
+	{"GET", "/objects/pack/pack-[0-9a-f]{64}\\.idx$", get_idx_file},
 
 	{"POST", "/git-upload-pack$", service_rpc},
 	{"POST", "/git-receive-pack$", service_rpc}

@@ -1,13 +1,20 @@
+/*
+ * not really _using_ the compat macros, just make sure the_index
+ * declaration matches the definition in this file.
+ */
+#define USE_THE_INDEX_COMPATIBILITY_MACROS
 #include "cache.h"
 #include "repository.h"
 #include "object-store.h"
 #include "config.h"
 #include "object.h"
+#include "lockfile.h"
 #include "submodule-config.h"
 
 /* The main repository */
 static struct repository the_repo;
 struct repository *the_repository;
+struct index_state the_index;
 
 void initialize_the_repository(void)
 {
@@ -119,6 +126,8 @@ out:
 void repo_set_worktree(struct repository *repo, const char *path)
 {
 	repo->worktree = real_pathdup(path, 1);
+
+	trace2_def_repo(repo);
 }
 
 static int read_and_verify_repository_format(struct repository_format *format,
@@ -148,7 +157,7 @@ int repo_init(struct repository *repo,
 	      const char *gitdir,
 	      const char *worktree)
 {
-	struct repository_format format;
+	struct repository_format format = REPOSITORY_FORMAT_INIT;
 	memset(repo, 0, sizeof(*repo));
 
 	repo->objects = raw_object_store_new();
@@ -165,6 +174,7 @@ int repo_init(struct repository *repo,
 	if (worktree)
 		repo_set_worktree(repo, worktree);
 
+	clear_repository_format(&format);
 	return 0;
 
 error:
@@ -172,34 +182,27 @@ error:
 	return -1;
 }
 
-/*
- * Initialize 'submodule' as the submodule given by 'path' in parent repository
- * 'superproject'.
- * Return 0 upon success and a non-zero value upon failure.
- */
-int repo_submodule_init(struct repository *submodule,
+int repo_submodule_init(struct repository *subrepo,
 			struct repository *superproject,
-			const char *path)
+			const struct submodule *sub)
 {
-	const struct submodule *sub;
 	struct strbuf gitdir = STRBUF_INIT;
 	struct strbuf worktree = STRBUF_INIT;
 	int ret = 0;
 
-	sub = submodule_from_path(superproject, &null_oid, path);
 	if (!sub) {
 		ret = -1;
 		goto out;
 	}
 
-	strbuf_repo_worktree_path(&gitdir, superproject, "%s/.git", path);
-	strbuf_repo_worktree_path(&worktree, superproject, "%s", path);
+	strbuf_repo_worktree_path(&gitdir, superproject, "%s/.git", sub->path);
+	strbuf_repo_worktree_path(&worktree, superproject, "%s", sub->path);
 
-	if (repo_init(submodule, gitdir.buf, worktree.buf)) {
+	if (repo_init(subrepo, gitdir.buf, worktree.buf)) {
 		/*
-		 * If initilization fails then it may be due to the submodule
+		 * If initialization fails then it may be due to the submodule
 		 * not being populated in the superproject's worktree.  Instead
-		 * we can try to initilize the submodule by finding it's gitdir
+		 * we can try to initialize the submodule by finding it's gitdir
 		 * in the superproject's 'modules' directory.  In this case the
 		 * submodule would not have a worktree.
 		 */
@@ -207,16 +210,16 @@ int repo_submodule_init(struct repository *submodule,
 		strbuf_repo_git_path(&gitdir, superproject,
 				     "modules/%s", sub->name);
 
-		if (repo_init(submodule, gitdir.buf, NULL)) {
+		if (repo_init(subrepo, gitdir.buf, NULL)) {
 			ret = -1;
 			goto out;
 		}
 	}
 
-	submodule->submodule_prefix = xstrfmt("%s%s/",
-					      superproject->submodule_prefix ?
-					      superproject->submodule_prefix :
-					      "", path);
+	subrepo->submodule_prefix = xstrfmt("%s%s/",
+					    superproject->submodule_prefix ?
+					    superproject->submodule_prefix :
+					    "", sub->path);
 
 out:
 	strbuf_release(&gitdir);
@@ -262,4 +265,13 @@ int repo_read_index(struct repository *repo)
 		repo->index = xcalloc(1, sizeof(*repo->index));
 
 	return read_index_from(repo->index, repo->index_file, repo->gitdir);
+}
+
+int repo_hold_locked_index(struct repository *repo,
+			   struct lock_file *lf,
+			   int flags)
+{
+	if (!repo->index_file)
+		BUG("the repo hasn't been setup");
+	return hold_lock_file_for_update(lf, repo->index_file, flags);
 }

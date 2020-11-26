@@ -1,3 +1,5 @@
+[![Build status](https://github.com/git/git/workflows/CI/PR/badge.svg)](https://github.com/git/git/actions?query=branch%3Amaster+event%3Apush)
+
 Git - fast, scalable, distributed revision control system
 =========================================================
 
@@ -17,7 +19,7 @@ including full documentation and Git related tools.
 
 See [Documentation/gittutorial.txt][] to get started, then see
 [Documentation/giteveryday.txt][] for a useful minimum set of commands, and
-Documentation/git-<commandname>.txt for documentation of each command.
+`Documentation/git-<commandname>.txt` for documentation of each command.
 If git has been correctly installed, then the tutorial can also be
 read with `man gittutorial` or `git help tutorial`, and the
 documentation of each command with `man git-<commandname>` or `git help
@@ -33,7 +35,7 @@ requests, comments and patches to git@vger.kernel.org (read
 [Documentation/SubmittingPatches][] for instructions on patch submission).
 To subscribe to the list, send an email with just "subscribe git" in
 the body to majordomo@vger.kernel.org. The mailing list archives are
-available at <https://public-inbox.org/git/>,
+available at <https://lore.kernel.org/git/>,
 <http://marc.info/?l=git> and other archival sites.
 
 Issues which are security relevant should be disclosed privately to

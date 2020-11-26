@@ -58,7 +58,7 @@ test_expect_success 'import with extra info lines from verbose p4 trigger' '
 	(
 		cd "$git" &&
 		git p4 sync
-	)&&
+	) &&
 	(
 		p4 triggers -i <<-EOF
 		Triggers:
@@ -94,10 +94,6 @@ test_expect_success 'submit description with extra info lines from verbose p4 ch
 		cd "$cli" &&
 		test_path_is_file file4
 	)
-'
-
-test_expect_success 'kill p4d' '
-	kill_p4d
 '
 
 test_done

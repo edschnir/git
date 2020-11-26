@@ -294,7 +294,6 @@ test_expect_success 'cope with rcs keyword file deletion' '
 		echo "\$Revision\$" >kwdelfile.c &&
 		p4 add -t ktext kwdelfile.c &&
 		p4 submit -d "Add file to be deleted" &&
-		cat kwdelfile.c &&
 		grep 1 kwdelfile.c
 	) &&
 	git p4 clone --dest="$git" //depot &&
@@ -358,10 +357,6 @@ test_expect_failure 'Add keywords in git which do not match the default p4 value
 		grep "NewKW2.*Revision.*[0-9]" kwfile1.c
 
 	)
-'
-
-test_expect_success 'kill p4d' '
-	kill_p4d
 '
 
 test_done

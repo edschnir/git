@@ -2,23 +2,24 @@
 #include "repository.h"
 #include "refs.h"
 #include "remote.h"
-#include "argv-array.h"
+#include "strvec.h"
 #include "ls-refs.h"
 #include "pkt-line.h"
+#include "config.h"
 
 /*
  * Check if one of the prefixes is a prefix of the ref.
  * If no prefixes were provided, all refs match.
  */
-static int ref_match(const struct argv_array *prefixes, const char *refname)
+static int ref_match(const struct strvec *prefixes, const char *refname)
 {
 	int i;
 
-	if (!prefixes->argc)
+	if (!prefixes->nr)
 		return 1; /* no restriction */
 
-	for (i = 0; i < prefixes->argc; i++) {
-		const char *prefix = prefixes->argv[i];
+	for (i = 0; i < prefixes->nr; i++) {
+		const char *prefix = prefixes->v[i];
 
 		if (starts_with(refname, prefix))
 			return 1;
@@ -30,7 +31,7 @@ static int ref_match(const struct argv_array *prefixes, const char *refname)
 struct ls_refs_data {
 	unsigned peel;
 	unsigned symrefs;
-	struct argv_array prefixes;
+	struct strvec prefixes;
 };
 
 static int send_ref(const char *refname, const struct object_id *oid,
@@ -40,7 +41,10 @@ static int send_ref(const char *refname, const struct object_id *oid,
 	const char *refname_nons = strip_namespace(refname);
 	struct strbuf refline = STRBUF_INIT;
 
-	if (!ref_match(&data->prefixes, refname))
+	if (ref_is_hidden(refname_nons, refname))
+		return 0;
+
+	if (!ref_match(&data->prefixes, refname_nons))
 		return 0;
 
 	strbuf_addf(&refline, "%s %s", oid_to_hex(oid), refname_nons);
@@ -53,7 +57,8 @@ static int send_ref(const char *refname, const struct object_id *oid,
 		if (!symref_target)
 			die("'%s' is a symref but it is not?", refname);
 
-		strbuf_addf(&refline, " symref-target:%s", symref_target);
+		strbuf_addf(&refline, " symref-target:%s",
+			    strip_namespace(symref_target));
 	}
 
 	if (data->peel) {
@@ -69,14 +74,26 @@ static int send_ref(const char *refname, const struct object_id *oid,
 	return 0;
 }
 
-int ls_refs(struct repository *r, struct argv_array *keys,
+static int ls_refs_config(const char *var, const char *value, void *data)
+{
+	/*
+	 * We only serve fetches over v2 for now, so respect only "uploadpack"
+	 * config. This may need to eventually be expanded to "receive", but we
+	 * don't yet know how that information will be passed to ls-refs.
+	 */
+	return parse_hide_refs_config(var, value, "uploadpack");
+}
+
+int ls_refs(struct repository *r, struct strvec *keys,
 	    struct packet_reader *request)
 {
 	struct ls_refs_data data;
 
 	memset(&data, 0, sizeof(data));
 
-	while (packet_reader_read(request) != PACKET_READ_FLUSH) {
+	git_config(ls_refs_config, NULL);
+
+	while (packet_reader_read(request) == PACKET_READ_NORMAL) {
 		const char *arg = request->line;
 		const char *out;
 
@@ -85,12 +102,15 @@ int ls_refs(struct repository *r, struct argv_array *keys,
 		else if (!strcmp("symrefs", arg))
 			data.symrefs = 1;
 		else if (skip_prefix(arg, "ref-prefix ", &out))
-			argv_array_push(&data.prefixes, out);
+			strvec_push(&data.prefixes, out);
 	}
+
+	if (request->status != PACKET_READ_FLUSH)
+		die(_("expected flush after ls-refs arguments"));
 
 	head_ref_namespaced(send_ref, &data);
 	for_each_namespaced_ref(send_ref, &data);
 	packet_flush(1);
-	argv_array_clear(&data.prefixes);
+	strvec_clear(&data.prefixes);
 	return 0;
 }

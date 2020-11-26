@@ -21,21 +21,14 @@ has_any () {
 }
 
 test_expect_success 'setup repo with moderate-sized history' '
-	for i in $(test_seq 1 10)
-	do
-		test_commit $i
-	done &&
+	test_commit_bulk --id=file 100 &&
 	git checkout -b other HEAD~5 &&
-	for i in $(test_seq 1 10)
-	do
-		test_commit side-$i
-	done &&
+	test_commit_bulk --id=side 10 &&
 	git checkout master &&
 	bitmaptip=$(git rev-parse master) &&
 	blob=$(echo tagged-blob | git hash-object -w --stdin) &&
 	git tag tagged-blob $blob &&
-	git config repack.writebitmaps true &&
-	git config pack.writebitmaphashcache true
+	git config repack.writebitmaps true
 '
 
 test_expect_success 'full repack creates bitmaps' '
@@ -81,14 +74,22 @@ rev_list_tests() {
 		test_cmp expect actual
 	'
 
-	test_expect_success "enumerate --objects ($state)" '
-		git rev-list --objects --use-bitmap-index HEAD >tmp &&
-		cut -d" " -f1 <tmp >tmp2 &&
-		sort <tmp2 >actual &&
-		git rev-list --objects HEAD >tmp &&
-		cut -d" " -f1 <tmp >tmp2 &&
-		sort <tmp2 >expect &&
+	test_expect_success "counting objects via bitmap ($state)" '
+		git rev-list --count --objects HEAD >expect &&
+		git rev-list --use-bitmap-index --count --objects HEAD >actual &&
 		test_cmp expect actual
+	'
+
+	test_expect_success "enumerate commits ($state)" '
+		git rev-list --use-bitmap-index HEAD >actual &&
+		git rev-list HEAD >expect &&
+		test_bitmap_traversal --no-confirm-bitmaps expect actual
+	'
+
+	test_expect_success "enumerate --objects ($state)" '
+		git rev-list --objects --use-bitmap-index HEAD >actual &&
+		git rev-list --objects HEAD >expect &&
+		test_bitmap_traversal expect actual
 	'
 
 	test_expect_success "bitmap --objects handles non-commit objects ($state)" '
@@ -106,11 +107,22 @@ test_expect_success 'clone from bitmapped repository' '
 	test_cmp expect actual
 '
 
+test_expect_success 'partial clone from bitmapped repository' '
+	test_config uploadpack.allowfilter true &&
+	git clone --no-local --bare --filter=blob:none . partial-clone.git &&
+	(
+		cd partial-clone.git &&
+		pack=$(echo objects/pack/*.pack) &&
+		git verify-pack -v "$pack" >have &&
+		awk "/blob/ { print \$1 }" <have >blobs &&
+		# we expect this single blob because of the direct ref
+		git rev-parse refs/tags/tagged-blob >expect &&
+		test_cmp expect blobs
+	)
+'
+
 test_expect_success 'setup further non-bitmapped commits' '
-	for i in $(test_seq 1 10)
-	do
-		test_commit further-$i
-	done
+	test_commit_bulk --id=further 10
 '
 
 rev_list_tests 'partial bitmap'
@@ -265,17 +277,17 @@ test_expect_success 'pack with missing parent' '
 	git pack-objects --stdout --revs <revs >/dev/null
 '
 
-test_expect_success JGIT 'we can read jgit bitmaps' '
+test_expect_success JGIT,SHA1 'we can read jgit bitmaps' '
 	git clone --bare . compat-jgit.git &&
 	(
 		cd compat-jgit.git &&
-		rm -f .git/objects/pack/*.bitmap &&
+		rm -f objects/pack/*.bitmap &&
 		jgit gc &&
 		git rev-list --test-bitmap HEAD
 	)
 '
 
-test_expect_success JGIT 'jgit can read our bitmaps' '
+test_expect_success JGIT,SHA1 'jgit can read our bitmaps' '
 	git clone --bare . compat-us.git &&
 	(
 		cd compat-us.git &&

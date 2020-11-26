@@ -7,14 +7,17 @@ ARTICLES =
 SP_ARTICLES =
 OBSOLETE_HTML =
 
+-include GIT-EXCLUDED-PROGRAMS
+
 MAN1_TXT += $(filter-out \
+		$(patsubst %,%.txt,$(EXCLUDED_PROGRAMS)) \
 		$(addsuffix .txt, $(ARTICLES) $(SP_ARTICLES)), \
 		$(wildcard git-*.txt))
 MAN1_TXT += git.txt
 MAN1_TXT += gitk.txt
-MAN1_TXT += gitremote-helpers.txt
 MAN1_TXT += gitweb.txt
 
+# man5 / man7 guides (note: new guides should also be added to command-list.txt)
 MAN5_TXT += gitattributes.txt
 MAN5_TXT += githooks.txt
 MAN5_TXT += gitignore.txt
@@ -28,22 +31,29 @@ MAN7_TXT += gitcredentials.txt
 MAN7_TXT += gitcvs-migration.txt
 MAN7_TXT += gitdiffcore.txt
 MAN7_TXT += giteveryday.txt
+MAN7_TXT += gitfaq.txt
 MAN7_TXT += gitglossary.txt
 MAN7_TXT += gitnamespaces.txt
+MAN7_TXT += gitremote-helpers.txt
 MAN7_TXT += gitrevisions.txt
 MAN7_TXT += gitsubmodules.txt
 MAN7_TXT += gittutorial-2.txt
 MAN7_TXT += gittutorial.txt
 MAN7_TXT += gitworkflows.txt
 
+ifdef MAN_FILTER
+MAN_TXT = $(filter $(MAN_FILTER),$(MAN1_TXT) $(MAN5_TXT) $(MAN7_TXT))
+else
 MAN_TXT = $(MAN1_TXT) $(MAN5_TXT) $(MAN7_TXT)
+MAN_FILTER = $(MAN_TXT)
+endif
+
 MAN_XML = $(patsubst %.txt,%.xml,$(MAN_TXT))
 MAN_HTML = $(patsubst %.txt,%.html,$(MAN_TXT))
 GIT_MAN_REF = master
 
 OBSOLETE_HTML += everyday.html
 OBSOLETE_HTML += git-remote-helpers.html
-DOC_HTML = $(MAN_HTML) $(OBSOLETE_HTML)
 
 ARTICLES += howto-index
 ARTICLES += git-tools
@@ -68,6 +78,8 @@ SP_ARTICLES += howto/maintain-git
 API_DOCS = $(patsubst %.txt,%,$(filter-out technical/api-index-skel.txt technical/api-index.txt, $(wildcard technical/api-*.txt)))
 SP_ARTICLES += $(API_DOCS)
 
+TECH_DOCS += MyFirstContribution
+TECH_DOCS += MyFirstObjectWalk
 TECH_DOCS += SubmittingPatches
 TECH_DOCS += technical/hash-function-transition
 TECH_DOCS += technical/http-protocol
@@ -82,6 +94,7 @@ TECH_DOCS += technical/protocol-capabilities
 TECH_DOCS += technical/protocol-common
 TECH_DOCS += technical/protocol-v2
 TECH_DOCS += technical/racy-git
+TECH_DOCS += technical/reftable
 TECH_DOCS += technical/send-pack-pipeline
 TECH_DOCS += technical/shallow
 TECH_DOCS += technical/signature-format
@@ -89,11 +102,13 @@ TECH_DOCS += technical/trivial-merge
 SP_ARTICLES += $(TECH_DOCS)
 SP_ARTICLES += technical/api-index
 
-DOC_HTML += $(patsubst %,%.html,$(ARTICLES) $(SP_ARTICLES))
+ARTICLES_HTML += $(patsubst %,%.html,$(ARTICLES) $(SP_ARTICLES))
+HTML_FILTER ?= $(ARTICLES_HTML) $(OBSOLETE_HTML)
+DOC_HTML = $(MAN_HTML) $(filter $(HTML_FILTER),$(ARTICLES_HTML) $(OBSOLETE_HTML))
 
-DOC_MAN1 = $(patsubst %.txt,%.1,$(MAN1_TXT))
-DOC_MAN5 = $(patsubst %.txt,%.5,$(MAN5_TXT))
-DOC_MAN7 = $(patsubst %.txt,%.7,$(MAN7_TXT))
+DOC_MAN1 = $(patsubst %.txt,%.1,$(filter $(MAN_FILTER),$(MAN1_TXT)))
+DOC_MAN5 = $(patsubst %.txt,%.5,$(filter $(MAN_FILTER),$(MAN5_TXT)))
+DOC_MAN7 = $(patsubst %.txt,%.7,$(filter $(MAN_FILTER),$(MAN7_TXT)))
 
 prefix ?= $(HOME)
 bindir ?= $(prefix)/bin
@@ -112,7 +127,8 @@ ASCIIDOC_HTML = xhtml11
 ASCIIDOC_DOCBOOK = docbook
 ASCIIDOC_CONF = -f asciidoc.conf
 ASCIIDOC_COMMON = $(ASCIIDOC) $(ASCIIDOC_EXTRA) $(ASCIIDOC_CONF) \
-		-agit_version=$(GIT_VERSION)
+		-amanversion=$(GIT_VERSION) \
+		-amanmanual='Git Manual' -amansource='Git'
 TXT_TO_HTML = $(ASCIIDOC_COMMON) -b $(ASCIIDOC_HTML)
 TXT_TO_XML = $(ASCIIDOC_COMMON) -b $(ASCIIDOC_DOCBOOK)
 MANPAGE_XSL = manpage-normal.xsl
@@ -136,31 +152,8 @@ endif
 -include ../config.mak.autogen
 -include ../config.mak
 
-#
-# For docbook-xsl ...
-#	-1.68.1,	no extra settings are needed?
-#	1.69.0,		set ASCIIDOC_ROFF?
-#	1.69.1-1.71.0,	set DOCBOOK_SUPPRESS_SP?
-#	1.71.1,		set ASCIIDOC_ROFF?
-#	1.72.0,		set DOCBOOK_XSL_172.
-#	1.73.0-,	no extra settings are needed
-#
-
-ifdef DOCBOOK_XSL_172
-ASCIIDOC_EXTRA += -a git-asciidoc-no-roff
-MANPAGE_XSL = manpage-1.72.xsl
-else
-	ifndef ASCIIDOC_ROFF
-	# docbook-xsl after 1.72 needs the regular XSL, but will not
-	# pass-thru raw roff codes from asciidoc.conf, so turn them off.
-	ASCIIDOC_EXTRA += -a git-asciidoc-no-roff
-	endif
-endif
 ifndef NO_MAN_BOLD_LITERAL
 XMLTO_EXTRA += -m manpage-bold-literal.xsl
-endif
-ifdef DOCBOOK_SUPPRESS_SP
-XMLTO_EXTRA += -m manpage-suppress-sp.xsl
 endif
 
 # Newer DocBook stylesheet emits warning cruft in the output when
@@ -186,11 +179,13 @@ ifdef USE_ASCIIDOCTOR
 ASCIIDOC = asciidoctor
 ASCIIDOC_CONF =
 ASCIIDOC_HTML = xhtml5
-ASCIIDOC_DOCBOOK = docbook45
+ASCIIDOC_DOCBOOK = docbook5
 ASCIIDOC_EXTRA += -acompat-mode -atabsize=8
 ASCIIDOC_EXTRA += -I. -rasciidoctor-extensions
 ASCIIDOC_EXTRA += -alitdd='&\#x2d;&\#x2d;'
 DBLATEX_COMMON =
+XMLTO_EXTRA += --skip-validation
+XMLTO_EXTRA += -x manpage.xsl
 endif
 
 SHELL_PATH ?= $(SHELL)
@@ -300,6 +295,7 @@ cmds_txt = cmds-ancillaryinterrogators.txt \
 	cmds-plumbingmanipulators.txt \
 	cmds-synchingrepositories.txt \
 	cmds-synchelpers.txt \
+	cmds-guide.txt \
 	cmds-purehelpers.txt \
 	cmds-foreignscminterface.txt
 
@@ -307,7 +303,7 @@ $(cmds_txt): cmd-list.made
 
 cmd-list.made: cmd-list.perl ../command-list.txt $(MAN1_TXT)
 	$(QUIET_GEN)$(RM) $@ && \
-	$(PERL_PATH) ./cmd-list.perl ../command-list.txt $(QUIET_STDERR) && \
+	$(PERL_PATH) ./cmd-list.perl ../command-list.txt $(cmds_txt) $(QUIET_STDERR) && \
 	date >$@
 
 mergetools_txt = mergetools-diff.txt mergetools-merge.txt
@@ -324,6 +320,15 @@ mergetools-list.made: ../git-mergetool--lib.sh $(wildcard ../mergetools/*)
 		show_tool_names can_merge "* " || :' >mergetools-merge.txt && \
 	date >$@
 
+TRACK_ASCIIDOCFLAGS = $(subst ','\'',$(ASCIIDOC_COMMON):$(ASCIIDOC_HTML):$(ASCIIDOC_DOCBOOK))
+
+GIT-ASCIIDOCFLAGS: FORCE
+	@FLAGS='$(TRACK_ASCIIDOCFLAGS)'; \
+	    if test x"$$FLAGS" != x"`cat GIT-ASCIIDOCFLAGS 2>/dev/null`" ; then \
+		echo >&2 "    * new asciidoc flags"; \
+		echo "$$FLAGS" >GIT-ASCIIDOCFLAGS; \
+            fi
+
 clean:
 	$(RM) *.xml *.xml+ *.html *.html+ *.1 *.5 *.7
 	$(RM) *.texi *.texi+ *.texi++ git.info gitman.info
@@ -333,13 +338,14 @@ clean:
 	$(RM) SubmittingPatches.txt
 	$(RM) $(cmds_txt) $(mergetools_txt) *.made
 	$(RM) manpage-base-url.xsl
+	$(RM) GIT-ASCIIDOCFLAGS
 
-$(MAN_HTML): %.html : %.txt asciidoc.conf
+$(MAN_HTML): %.html : %.txt asciidoc.conf asciidoctor-extensions.rb GIT-ASCIIDOCFLAGS
 	$(QUIET_ASCIIDOC)$(RM) $@+ $@ && \
 	$(TXT_TO_HTML) -d manpage -o $@+ $< && \
 	mv $@+ $@
 
-$(OBSOLETE_HTML): %.html : %.txto asciidoc.conf
+$(OBSOLETE_HTML): %.html : %.txto asciidoc.conf asciidoctor-extensions.rb GIT-ASCIIDOCFLAGS
 	$(QUIET_ASCIIDOC)$(RM) $@+ $@ && \
 	$(TXT_TO_HTML) -o $@+ $< && \
 	mv $@+ $@
@@ -347,16 +353,16 @@ $(OBSOLETE_HTML): %.html : %.txto asciidoc.conf
 manpage-base-url.xsl: manpage-base-url.xsl.in
 	$(QUIET_GEN)sed "s|@@MAN_BASE_URL@@|$(MAN_BASE_URL)|" $< > $@
 
-%.1 %.5 %.7 : %.xml manpage-base-url.xsl
+%.1 %.5 %.7 : %.xml manpage-base-url.xsl $(wildcard manpage*.xsl)
 	$(QUIET_XMLTO)$(RM) $@ && \
 	$(XMLTO) -m $(MANPAGE_XSL) $(XMLTO_EXTRA) man $<
 
-%.xml : %.txt asciidoc.conf
+%.xml : %.txt asciidoc.conf asciidoctor-extensions.rb GIT-ASCIIDOCFLAGS
 	$(QUIET_ASCIIDOC)$(RM) $@+ $@ && \
 	$(TXT_TO_XML) -d manpage -o $@+ $< && \
 	mv $@+ $@
 
-user-manual.xml: user-manual.txt user-manual.conf
+user-manual.xml: user-manual.txt user-manual.conf asciidoctor-extensions.rb GIT-ASCIIDOCFLAGS
 	$(QUIET_ASCIIDOC)$(RM) $@+ $@ && \
 	$(TXT_TO_XML) -d book -o $@+ $< && \
 	mv $@+ $@
@@ -366,7 +372,8 @@ technical/api-index.txt: technical/api-index-skel.txt \
 	$(QUIET_GEN)cd technical && '$(SHELL_PATH_SQ)' ./api-index.sh
 
 technical/%.html: ASCIIDOC_EXTRA += -a git-relative-html-prefix=../
-$(patsubst %,%.html,$(API_DOCS) technical/api-index $(TECH_DOCS)): %.html : %.txt asciidoc.conf
+$(patsubst %,%.html,$(API_DOCS) technical/api-index $(TECH_DOCS)): %.html : %.txt \
+	asciidoc.conf GIT-ASCIIDOCFLAGS
 	$(QUIET_ASCIIDOC)$(TXT_TO_HTML) $*.txt
 
 SubmittingPatches.txt: SubmittingPatches
@@ -423,7 +430,7 @@ $(patsubst %,%.html,$(ARTICLES)) : %.html : %.txt
 WEBDOC_DEST = /pub/software/scm/git/docs
 
 howto/%.html: ASCIIDOC_EXTRA += -a git-relative-html-prefix=../
-$(patsubst %.txt,%.html,$(wildcard howto/*.txt)): %.html : %.txt
+$(patsubst %.txt,%.html,$(wildcard howto/*.txt)): %.html : %.txt GIT-ASCIIDOCFLAGS
 	$(QUIET_ASCIIDOC)$(RM) $@+ $@ && \
 	sed -e '1,/^$$/d' $< | \
 	$(TXT_TO_HTML) - >$@+ && \
@@ -456,5 +463,10 @@ print-man1:
 
 lint-docs::
 	$(QUIET_LINT)$(PERL_PATH) lint-gitlink.perl
+
+ifeq ($(wildcard po/Makefile),po/Makefile)
+doc-l10n install-l10n::
+	$(MAKE) -C po $@
+endif
 
 .PHONY: FORCE

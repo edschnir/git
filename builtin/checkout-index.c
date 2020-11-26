@@ -4,6 +4,7 @@
  * Copyright (C) 2005 Linus Torvalds
  *
  */
+#define USE_THE_INDEX_COMPATIBILITY_MACROS
 #include "builtin.h"
 #include "config.h"
 #include "lockfile.h"
@@ -67,7 +68,8 @@ static int checkout_file(const char *name, const char *prefix)
 			continue;
 		did_checkout = 1;
 		if (checkout_entry(ce, &state,
-		    to_tempfile ? topath[ce_stage(ce)] : NULL) < 0)
+				   to_tempfile ? topath[ce_stage(ce)] : NULL,
+				   NULL) < 0)
 			errs++;
 	}
 
@@ -76,6 +78,14 @@ static int checkout_file(const char *name, const char *prefix)
 			write_tempfile_record(name, prefix);
 		return errs > 0 ? -1 : 0;
 	}
+
+	/*
+	 * At this point we know we didn't try to check anything out. If it was
+	 * because we did find an entry but it was stage 0, that's not an
+	 * error.
+	 */
+	if (has_same_name && checkout_stage == CHECKOUT_ALL)
+		return 0;
 
 	if (!state.quiet) {
 		fprintf(stderr, "git checkout-index: %s ", name);
@@ -111,7 +121,8 @@ static void checkout_all(const char *prefix, int prefix_length)
 				write_tempfile_record(last_ce->name, prefix);
 		}
 		if (checkout_entry(ce, &state,
-		    to_tempfile ? topath[ce_stage(ce)] : NULL) < 0)
+				   to_tempfile ? topath[ce_stage(ce)] : NULL,
+				   NULL) < 0)
 			errs++;
 		last_ce = ce;
 	}
@@ -156,6 +167,7 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 	int prefix_length;
 	int force = 0, quiet = 0, not_new = 0;
 	int index_opt = 0;
+	int err = 0;
 	struct option builtin_checkout_index_options[] = {
 		OPT_BOOL('a', "all", &all,
 			N_("check out all files in the index")),
@@ -174,9 +186,9 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 			N_("write the content to temporary files")),
 		OPT_STRING(0, "prefix", &state.base_dir, N_("string"),
 			N_("when creating files, prepend <string>")),
-		{ OPTION_CALLBACK, 0, "stage", NULL, "(1|2|3|all)",
+		OPT_CALLBACK_F(0, "stage", NULL, "(1|2|3|all)",
 			N_("copy out the files from named stage"),
-			PARSE_OPT_NONEG, option_parse_stage },
+			PARSE_OPT_NONEG, option_parse_stage),
 		OPT_END()
 	};
 
@@ -220,7 +232,7 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 		if (read_from_stdin)
 			die("git checkout-index: don't mix '--stdin' and explicit filenames");
 		p = prefix_path(prefix, prefix_length, arg);
-		checkout_file(p, prefix);
+		err |= checkout_file(p, prefix);
 		free(p);
 	}
 
@@ -242,12 +254,15 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 				strbuf_swap(&buf, &unquoted);
 			}
 			p = prefix_path(prefix, prefix_length, buf.buf);
-			checkout_file(p, prefix);
+			err |= checkout_file(p, prefix);
 			free(p);
 		}
 		strbuf_release(&unquoted);
 		strbuf_release(&buf);
 	}
+
+	if (err)
+		return 1;
 
 	if (all)
 		checkout_all(prefix, prefix_length);

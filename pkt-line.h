@@ -3,6 +3,7 @@
 
 #include "git-compat-util.h"
 #include "strbuf.h"
+#include "sideband.h"
 
 /*
  * Write a packetized stream, where each line is preceded by
@@ -21,9 +22,11 @@
  */
 void packet_flush(int fd);
 void packet_delim(int fd);
+void packet_response_end(int fd);
 void packet_write_fmt(int fd, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
 void packet_buf_flush(struct strbuf *buf);
 void packet_buf_delim(struct strbuf *buf);
+void set_packet_header(char *buf, int size);
 void packet_write(int fd_out, const char *buf, size_t size);
 void packet_buf_write(struct strbuf *buf, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
 void packet_buf_write_len(struct strbuf *buf, const char *data, size_t len);
@@ -62,16 +65,29 @@ int write_packetized_from_buf(const char *src_in, size_t len, int fd_out);
  *
  * If options contains PACKET_READ_CHOMP_NEWLINE, a trailing newline (if
  * present) is removed from the buffer before returning.
+ *
+ * If options contains PACKET_READ_DIE_ON_ERR_PACKET, it dies when it sees an
+ * ERR packet.
  */
-#define PACKET_READ_GENTLE_ON_EOF (1u<<0)
-#define PACKET_READ_CHOMP_NEWLINE (1u<<1)
+#define PACKET_READ_GENTLE_ON_EOF     (1u<<0)
+#define PACKET_READ_CHOMP_NEWLINE     (1u<<1)
+#define PACKET_READ_DIE_ON_ERR_PACKET (1u<<2)
 int packet_read(int fd, char **src_buffer, size_t *src_len, char
 		*buffer, unsigned size, int options);
 
 /*
+ * Convert a four hex digit packet line length header into its numeric
+ * representation.
+ *
+ * If lenbuf_hex contains non-hex characters, return -1. Otherwise, return the
+ * numeric value of the length header.
+ */
+int packet_length(const char lenbuf_hex[4]);
+
+/*
  * Read a packetized line into a buffer like the 'packet_read()' function but
  * returns an 'enum packet_read_status' which indicates the status of the read.
- * The number of bytes read will be assigined to *pktlen if the status of the
+ * The number of bytes read will be assigned to *pktlen if the status of the
  * read was 'PACKET_READ_NORMAL'.
  */
 enum packet_read_status {
@@ -79,6 +95,7 @@ enum packet_read_status {
 	PACKET_READ_NORMAL,
 	PACKET_READ_FLUSH,
 	PACKET_READ_DELIM,
+	PACKET_READ_RESPONSE_END,
 };
 enum packet_read_status packet_read_with_status(int fd, char **src_buffer,
 						size_t *src_len, char *buffer,
@@ -116,6 +133,21 @@ char *packet_read_line_buf(char **src_buf, size_t *src_len, int *size);
  */
 ssize_t read_packetized_to_strbuf(int fd_in, struct strbuf *sb_out);
 
+/*
+ * Receive multiplexed output stream over git native protocol.
+ * in_stream is the input stream from the remote, which carries data
+ * in pkt_line format with band designator.  Demultiplex it into out
+ * and err and return error appropriately.  Band #1 carries the
+ * primary payload.  Things coming over band #2 is not necessarily
+ * error; they are usually informative message on the standard error
+ * stream, aka "verbose").  A message over band #3 is a signal that
+ * the remote died unexpectedly.  A flush() concludes the stream.
+ *
+ * Returns SIDEBAND_FLUSH upon a normal conclusion, and SIDEBAND_PROTOCOL_ERROR
+ * or SIDEBAND_REMOTE_ERROR if an error occurred.
+ */
+int recv_sideband(const char *me, int in_stream, int out);
+
 struct packet_reader {
 	/* source file descriptor */
 	int fd;
@@ -142,15 +174,21 @@ struct packet_reader {
 
 	/* indicates if a line has been peeked */
 	int line_peeked;
+
+	unsigned use_sideband : 1;
+	const char *me;
+
+	/* hash algorithm in use */
+	const struct git_hash_algo *hash_algo;
 };
 
 /*
  * Initialize a 'struct packet_reader' object which is an
  * abstraction around the 'packet_read_with_status()' function.
  */
-extern void packet_reader_init(struct packet_reader *reader, int fd,
-			       char *src_buffer, size_t src_len,
-			       int options);
+void packet_reader_init(struct packet_reader *reader, int fd,
+			char *src_buffer, size_t src_len,
+			int options);
 
 /*
  * Perform a packet read and return the status of the read.
@@ -162,7 +200,7 @@ extern void packet_reader_init(struct packet_reader *reader, int fd,
  *		       'line' is set to point at the read line
  * PACKET_READ_FLUSH: 'pktlen' is set to '0' and 'line' is set to NULL
  */
-extern enum packet_read_status packet_reader_read(struct packet_reader *reader);
+enum packet_read_status packet_reader_read(struct packet_reader *reader);
 
 /*
  * Peek the next packet line without consuming it and return the status.
@@ -172,11 +210,26 @@ extern enum packet_read_status packet_reader_read(struct packet_reader *reader);
  * Peeking multiple times without calling 'packet_reader_read()' will return
  * the same result.
  */
-extern enum packet_read_status packet_reader_peek(struct packet_reader *reader);
+enum packet_read_status packet_reader_peek(struct packet_reader *reader);
 
 #define DEFAULT_PACKET_MAX 1000
 #define LARGE_PACKET_MAX 65520
 #define LARGE_PACKET_DATA_MAX (LARGE_PACKET_MAX - 4)
 extern char packet_buffer[LARGE_PACKET_MAX];
+
+struct packet_writer {
+	int dest_fd;
+	unsigned use_sideband : 1;
+};
+
+void packet_writer_init(struct packet_writer *writer, int dest_fd);
+
+/* These functions die upon failure. */
+__attribute__((format (printf, 2, 3)))
+void packet_writer_write(struct packet_writer *writer, const char *fmt, ...);
+__attribute__((format (printf, 2, 3)))
+void packet_writer_error(struct packet_writer *writer, const char *fmt, ...);
+void packet_writer_delim(struct packet_writer *writer);
+void packet_writer_flush(struct packet_writer *writer);
 
 #endif

@@ -148,7 +148,11 @@ struct packing_data {
 	struct packed_git **in_pack_by_idx;
 	struct packed_git **in_pack;
 
-	pthread_mutex_t lock;
+	/*
+	 * During packing with multiple threads, protect the in-core
+	 * object database from concurrent accesses.
+	 */
+	pthread_mutex_t odb_lock;
 
 	/*
 	 * This list contains entries for bases which we know the other side
@@ -168,22 +172,21 @@ struct packing_data {
 
 void prepare_packing_data(struct repository *r, struct packing_data *pdata);
 
+/* Protect access to object database */
 static inline void packing_data_lock(struct packing_data *pdata)
 {
-	pthread_mutex_lock(&pdata->lock);
+	pthread_mutex_lock(&pdata->odb_lock);
 }
 static inline void packing_data_unlock(struct packing_data *pdata)
 {
-	pthread_mutex_unlock(&pdata->lock);
+	pthread_mutex_unlock(&pdata->odb_lock);
 }
 
 struct object_entry *packlist_alloc(struct packing_data *pdata,
-				    const unsigned char *sha1,
-				    uint32_t index_pos);
+				    const struct object_id *oid);
 
 struct object_entry *packlist_find(struct packing_data *pdata,
-				   const unsigned char *sha1,
-				   uint32_t *index_pos);
+				   const struct object_id *oid);
 
 static inline uint32_t pack_name_hash(const char *name)
 {
@@ -242,18 +245,27 @@ static inline struct packed_git *oe_in_pack(const struct packing_data *pack,
 		return pack->in_pack[e - pack->objects];
 }
 
-void oe_map_new_pack(struct packing_data *pack,
-		     struct packed_git *p);
+void oe_map_new_pack(struct packing_data *pack);
+
 static inline void oe_set_in_pack(struct packing_data *pack,
 				  struct object_entry *e,
 				  struct packed_git *p)
 {
-	if (!p->index)
-		oe_map_new_pack(pack, p);
-	if (pack->in_pack_by_idx)
-		e->in_pack_idx = p->index;
-	else
-		pack->in_pack[e - pack->objects] = p;
+	if (pack->in_pack_by_idx) {
+		if (p->index) {
+			e->in_pack_idx = p->index;
+			return;
+		}
+		/*
+		 * We're accessing packs by index, but this pack doesn't have
+		 * an index (e.g., because it was added since we created the
+		 * in_pack_by_idx array). Bail to oe_map_new_pack(), which
+		 * will convert us to using the full in_pack array, and then
+		 * fall through to our in_pack handling.
+		 */
+		oe_map_new_pack(pack);
+	}
+	pack->in_pack[e - pack->objects] = p;
 }
 
 static inline struct object_entry *oe_delta(
@@ -280,7 +292,7 @@ static inline void oe_set_delta(struct packing_data *pack,
 
 void oe_set_delta_ext(struct packing_data *pack,
 		      struct object_entry *e,
-		      const unsigned char *sha1);
+		      const struct object_id *oid);
 
 static inline struct object_entry *oe_delta_child(
 		const struct packing_data *pack,

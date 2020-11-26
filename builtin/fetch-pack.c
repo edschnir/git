@@ -3,7 +3,7 @@
 #include "fetch-pack.h"
 #include "remote.h"
 #include "connect.h"
-#include "sha1-array.h"
+#include "oid-array.h"
 #include "protocol.h"
 
 static const char fetch_pack_usage[] =
@@ -48,13 +48,14 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 	struct ref **sought = NULL;
 	int nr_sought = 0, alloc_sought = 0;
 	int fd[2];
-	char *pack_lockfile = NULL;
-	char **pack_lockfile_ptr = NULL;
+	struct string_list pack_lockfiles = STRING_LIST_INIT_DUP;
+	struct string_list *pack_lockfiles_ptr = NULL;
 	struct child_process *conn;
 	struct fetch_pack_args args;
 	struct oid_array shallow = OID_ARRAY_INIT;
 	struct string_list deepen_not = STRING_LIST_INIT_DUP;
 	struct packet_reader reader;
+	enum protocol_version version;
 
 	fetch_if_missing = 0;
 
@@ -133,7 +134,7 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 		}
 		if (!strcmp("--lock-pack", arg)) {
 			args.lock_pack = 1;
-			pack_lockfile_ptr = &pack_lockfile;
+			pack_lockfiles_ptr = &pack_lockfiles;
 			continue;
 		}
 		if (!strcmp("--check-self-contained-and-connected", arg)) {
@@ -150,10 +151,6 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 		}
 		if (!strcmp("--from-promisor", arg)) {
 			args.from_promisor = 1;
-			continue;
-		}
-		if (!strcmp("--no-dependents", arg)) {
-			args.no_dependents = 1;
 			continue;
 		}
 		if (skip_prefix(arg, ("--" CL_ARG__FILTER "="), &arg)) {
@@ -217,11 +214,14 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 
 	packet_reader_init(&reader, fd[0], NULL, 0,
 			   PACKET_READ_CHOMP_NEWLINE |
-			   PACKET_READ_GENTLE_ON_EOF);
+			   PACKET_READ_GENTLE_ON_EOF |
+			   PACKET_READ_DIE_ON_ERR_PACKET);
 
-	switch (discover_version(&reader)) {
+	version = discover_version(&reader);
+	switch (version) {
 	case protocol_v2:
-		die("support for protocol v2 not implemented yet");
+		get_remote_refs(fd[1], &reader, &ref, 0, NULL, NULL, args.stateless_rpc);
+		break;
 	case protocol_v1:
 	case protocol_v0:
 		get_remote_heads(&reader, &ref, 0, NULL, &shallow);
@@ -230,11 +230,16 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 		BUG("unknown protocol version");
 	}
 
-	ref = fetch_pack(&args, fd, conn, ref, dest, sought, nr_sought,
-			 &shallow, pack_lockfile_ptr, protocol_v0);
-	if (pack_lockfile) {
-		printf("lock %s\n", pack_lockfile);
+	ref = fetch_pack(&args, fd, ref, sought, nr_sought,
+			 &shallow, pack_lockfiles_ptr, version);
+	if (pack_lockfiles.nr) {
+		int i;
+
+		printf("lock %s\n", pack_lockfiles.items[0].string);
 		fflush(stdout);
+		for (i = 1; i < pack_lockfiles.nr; i++)
+			warning(_("Lockfile created but not reported: %s"),
+				pack_lockfiles.items[i].string);
 	}
 	if (args.check_self_contained_and_connected &&
 	    args.self_contained_and_connected) {

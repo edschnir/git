@@ -282,7 +282,7 @@ test_expect_success 'rev-parse --disambiguate' '
 	# commits created by commit-tree in earlier tests share a
 	# different prefix.
 	git rev-parse --disambiguate=000000000 >actual &&
-	test $(wc -l <actual) = 16 &&
+	test_line_count = 16 actual &&
 	test "$(sed -e "s/^\(.........\).*/\1/" actual | sort -u)" = 000000000
 '
 
@@ -339,7 +339,7 @@ test_expect_success C_LOCALE_OUTPUT 'ambiguity hints' '
 test_expect_success C_LOCALE_OUTPUT 'ambiguity hints respect type' '
 	test_must_fail git rev-parse 000000000^{commit} 2>stderr &&
 	grep ^hint: stderr >hints &&
-	# 5 commits, 1 tag (which is a commitish), plus intro line
+	# 5 commits, 1 tag (which is a committish), plus intro line
 	test_line_count = 7 hints
 '
 
@@ -386,6 +386,16 @@ test_expect_success C_LOCALE_OUTPUT 'ambiguous commits are printed by type first
 		sort $type.objects >$type.objects.sorted &&
 		test_cmp $type.objects.sorted $type.objects
 	done
+'
+
+test_expect_success 'cat-file --batch and --batch-check show ambiguous' '
+	echo "0000 ambiguous" >expect &&
+	echo 0000 | git cat-file --batch-check >actual 2>err &&
+	test_cmp expect actual &&
+	test_i18ngrep hint: err &&
+	echo 0000 | git cat-file --batch >actual 2>err &&
+	test_cmp expect actual &&
+	test_i18ngrep hint: err
 '
 
 test_done

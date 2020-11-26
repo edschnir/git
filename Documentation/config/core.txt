@@ -68,6 +68,17 @@ core.fsmonitor::
 	avoiding unnecessary processing of files that have not changed.
 	See the "fsmonitor-watchman" section of linkgit:githooks[5].
 
+core.fsmonitorHookVersion::
+	Sets the version of hook that is to be used when calling fsmonitor.
+	There are currently versions 1 and 2. When this is not set,
+	version 2 will be tried first and if it fails then version 1
+	will be tried. Version 1 uses a timestamp as input to determine
+	which files have changes since that time but some monitors
+	like watchman have race conditions when used with a timestamp.
+	Version 2 uses an opaque string so that the monitor can return
+	something that can be used to determine what files have changed
+	without race conditions.
+
 core.trustctime::
 	If false, the ctime differences between the index and the
 	working tree are ignored; useful when the inode change time
@@ -86,7 +97,9 @@ core.untrackedCache::
 	it will automatically be removed, if set to `false`. Before
 	setting it to `true`, you should check that mtime is working
 	properly on your system.
-	See linkgit:git-update-index[1]. `keep` by default.
+	See linkgit:git-update-index[1]. `keep` by default, unless
+	`feature.manyFiles` is enabled which sets this setting to
+	`true` by default.
 
 core.checkStat::
 	When missing or is set to `default`, many fields in the stat
@@ -121,11 +134,14 @@ core.quotePath::
 
 core.eol::
 	Sets the line ending type to use in the working directory for
-	files that have the `text` property set when core.autocrlf is false.
+	files that are marked as text (either by having the `text`
+	attribute set, or by having `text=auto` and Git auto-detecting
+	the contents as text).
 	Alternatives are 'lf', 'crlf' and 'native', which uses the platform's
 	native line ending.  The default value is `native`.  See
 	linkgit:gitattributes[5] for more information on end-of-line
-	conversion.
+	conversion. Note that this value is ignored if `core.autocrlf`
+	is set to `true` or `input`.
 
 core.safecrlf::
 	If true, makes Git check if converting `CRLF` is reversible when
@@ -383,7 +399,7 @@ the largest projects.  You probably do not need to adjust this value.
 Common unit suffixes of 'k', 'm', or 'g' are supported.
 
 core.deltaBaseCacheLimit::
-	Maximum number of bytes to reserve for caching base objects
+	Maximum number of bytes per thread to reserve for caching base objects
 	that may be referenced by multiple deltified objects.  By storing the
 	entire decompressed base objects in a cache Git is able
 	to avoid unpacking and decompressing frequently used base
@@ -411,7 +427,7 @@ Common unit suffixes of 'k', 'm', or 'g' are supported.
 core.excludesFile::
 	Specifies the pathname to the file that contains patterns to
 	describe paths that are not meant to be tracked, in addition
-	to '.gitignore' (per-directory) and '.git/info/exclude'.
+	to `.gitignore` (per-directory) and `.git/info/exclude`.
 	Defaults to `$XDG_CONFIG_HOME/git/ignore`.
 	If `$XDG_CONFIG_HOME` is either not set or empty, `$HOME/.config/git/ignore`
 	is used instead. See linkgit:gitignore[5].
@@ -426,8 +442,8 @@ core.askPass::
 	command-line argument and write the password on its STDOUT.
 
 core.attributesFile::
-	In addition to '.gitattributes' (per-directory) and
-	'.git/info/attributes', Git looks into this file for attributes
+	In addition to `.gitattributes` (per-directory) and
+	`.git/info/attributes`, Git looks into this file for attributes
 	(see linkgit:gitattributes[5]). Path expansions are made the same
 	way as for `core.excludesFile`. Its default value is
 	`$XDG_CONFIG_HOME/git/attributes`. If `$XDG_CONFIG_HOME` is either not
@@ -435,10 +451,10 @@ core.attributesFile::
 
 core.hooksPath::
 	By default Git will look for your hooks in the
-	'$GIT_DIR/hooks' directory. Set this to different path,
-	e.g. '/etc/git/hooks', and Git will try to find your hooks in
-	that directory, e.g. '/etc/git/hooks/pre-receive' instead of
-	in '$GIT_DIR/hooks/pre-receive'.
+	`$GIT_DIR/hooks` directory. Set this to different path,
+	e.g. `/etc/git/hooks`, and Git will try to find your hooks in
+	that directory, e.g. `/etc/git/hooks/pre-receive` instead of
+	in `$GIT_DIR/hooks/pre-receive`.
 +
 The path can be either absolute or relative. A relative path is
 taken as relative to the directory where the hooks are run (see
@@ -554,6 +570,12 @@ core.unsetenvvars::
 	Defaults to `PERL5LIB` to account for the fact that Git for
 	Windows insists on using its own Perl interpreter.
 
+core.restrictinheritedhandles::
+	Windows-only: override whether spawned processes inherit only standard
+	file handles (`stdin`, `stdout` and `stderr`) or all handles. Can be
+	`auto`, `true` or `false`. Defaults to `auto`, which means `true` on
+	Windows 7 and later, and `false` on older Windows versions.
+
 core.createObject::
 	You can set this to 'link', in which case a hardlink followed by
 	a delete of the source are used to make sure that object creation
@@ -574,7 +596,7 @@ the `GIT_NOTES_REF` environment variable.  See linkgit:git-notes[1].
 
 core.commitGraph::
 	If true, then git will read the commit-graph file (if it exists)
-	to parse the graph structure of commits. Defaults to false. See
+	to parse the graph structure of commits. Defaults to true. See
 	linkgit:git-commit-graph[1] for more information.
 
 core.useReplaceRefs::
@@ -584,12 +606,18 @@ core.useReplaceRefs::
 
 core.multiPackIndex::
 	Use the multi-pack-index file to track multiple packfiles using a
-	single index. See link:technical/multi-pack-index.html[the
-	multi-pack-index design document].
+	single index. See linkgit:git-multi-pack-index[1] for more
+	information. Defaults to true.
 
 core.sparseCheckout::
-	Enable "sparse checkout" feature. See section "Sparse checkout" in
-	linkgit:git-read-tree[1] for more information.
+	Enable "sparse checkout" feature. See linkgit:git-sparse-checkout[1]
+	for more information.
+
+core.sparseCheckoutCone::
+	Enables the "cone mode" of the sparse checkout feature. When the
+	sparse-checkout file contains a limited set of patterns, then this
+	mode provides significant performance advantages. See
+	linkgit:git-sparse-checkout[1] for more information.
 
 core.abbrev::
 	Set the length object names are abbreviated to.  If

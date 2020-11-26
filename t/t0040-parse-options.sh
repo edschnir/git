@@ -23,6 +23,8 @@ usage: test-tool parse-options <options>
     -j <n>                get a integer, too
     -m, --magnitude <n>   get a magnitude
     --set23               set integer to 23
+    --mode1               set integer to 1 (cmdmode option)
+    --mode2               set integer to 2 (cmdmode option)
     -L, --length <str>    get length of <str>
     -F, --file <file>     set file to <file>
 
@@ -42,11 +44,17 @@ Magic arguments
     --no-ambiguous        negative ambiguity
 
 Standard options
-    --abbrev[=<n>]        use <n> digits to display SHA-1s
+    --abbrev[=<n>]        use <n> digits to display object names
     -v, --verbose         be verbose
     -n, --dry-run         dry run
     -q, --quiet           be quiet
     --expect <string>     expected output in the variable dump
+
+Alias
+    -A, --alias-source <string>
+                          get a string
+    -Z, --alias-target <string>
+                          alias of --alias-source
 
 EOF
 
@@ -203,25 +211,40 @@ file: (not set)
 EOF
 
 test_expect_success 'unambiguously abbreviated option' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
 	test-tool parse-options --int 2 --boolean --no-bo >output 2>output.err &&
 	test_must_be_empty output.err &&
 	test_cmp expect output
 '
 
 test_expect_success 'unambiguously abbreviated option with "="' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
 	test-tool parse-options --expect="integer: 2" --int=2
 '
 
 test_expect_success 'ambiguously abbreviated option' '
-	test_expect_code 129 test-tool parse-options --strin 123
+	test_expect_code 129 env GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
+	test-tool parse-options --strin 123
 '
 
 test_expect_success 'non ambiguous option (after two options it abbreviates)' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
 	test-tool parse-options --expect="string: 123" --st 123
 '
 
+test_expect_success 'Alias options do not contribute to abbreviation' '
+	test-tool parse-options --alias-source 123 >output &&
+	grep "^string: 123" output &&
+	test-tool parse-options --alias-target 123 >output &&
+	grep "^string: 123" output &&
+	test_must_fail test-tool parse-options --alias &&
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
+	test-tool parse-options --alias 123 >output &&
+	grep "^string: 123" output
+'
+
 cat >typo.err <<\EOF
-error: did you mean `--boolean` (with two dashes ?)
+error: did you mean `--boolean` (with two dashes)?
 EOF
 
 test_expect_success 'detect possible typos' '
@@ -231,7 +254,7 @@ test_expect_success 'detect possible typos' '
 '
 
 cat >typo.err <<\EOF
-error: did you mean `--ambiguous` (with two dashes ?)
+error: did you mean `--ambiguous` (with two dashes)?
 EOF
 
 test_expect_success 'detect possible typos' '
@@ -303,6 +326,22 @@ test_expect_success 'OPT_NEGBIT() works' '
 	test-tool parse-options --expect="boolean: 6" -bb --no-neg-or4
 '
 
+test_expect_success 'OPT_CMDMODE() works' '
+	test-tool parse-options --expect="integer: 1" --mode1
+'
+
+test_expect_success 'OPT_CMDMODE() detects incompatibility' '
+	test_must_fail test-tool parse-options --mode1 --mode2 >output 2>output.err &&
+	test_must_be_empty output &&
+	test_i18ngrep "incompatible with --mode" output.err
+'
+
+test_expect_success 'OPT_CMDMODE() detects incompatibility with something else' '
+	test_must_fail test-tool parse-options --set23 --mode2 >output 2>output.err &&
+	test_must_be_empty output &&
+	test_i18ngrep "incompatible with something else" output.err
+'
+
 test_expect_success 'OPT_COUNTUP() with PARSE_OPT_NODASH works' '
 	test-tool parse-options --expect="boolean: 6" + + + + + +
 '
@@ -325,6 +364,7 @@ file: (not set)
 EOF
 
 test_expect_success 'negation of OPT_NONEG flags is not ambiguous' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
 	test-tool parse-options --no-ambig >output 2>output.err &&
 	test_must_be_empty output.err &&
 	test_cmp expect output
@@ -368,6 +408,20 @@ test_expect_success '--no-verbose sets verbose to 0' '
 
 test_expect_success '--no-verbose resets multiple verbose to 0' '
 	test-tool parse-options --expect="verbose: 0" -v -v -v --no-verbose
+'
+
+test_expect_success 'GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS works' '
+	GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=false \
+		test-tool parse-options --ye &&
+	test_must_fail env GIT_TEST_DISALLOW_ABBREVIATED_OPTIONS=true \
+		test-tool parse-options --ye
+'
+
+test_expect_success '--end-of-options treats remainder as args' '
+	test-tool parse-options \
+	    --expect="verbose: -1" \
+	    --expect="arg 00: --verbose" \
+	    --end-of-options --verbose
 '
 
 test_done

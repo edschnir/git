@@ -17,6 +17,7 @@ test_expect_success 'setup' '
 	echo " " "error: leading space"
 	echo "    "
 	echo Err
+	echo SUCCESS
 	exit 0
 	EOF
 	echo 1 >file &&
@@ -35,6 +36,7 @@ test_expect_success 'keywords' '
 	grep "<BOLD;RED>error<RESET>: error" decoded &&
 	grep "<YELLOW>hint<RESET>:" decoded &&
 	grep "<BOLD;GREEN>success<RESET>:" decoded &&
+	grep "<BOLD;GREEN>SUCCESS<RESET>" decoded &&
 	grep "<BOLD;YELLOW>warning<RESET>:" decoded
 '
 
@@ -54,14 +56,13 @@ test_expect_success 'short line' '
 
 test_expect_success 'case-insensitive' '
 	git --git-dir child/.git -c color.remote=always push -f origin HEAD:refs/heads/case-insensitive 2>output &&
-	cat output &&
 	test_decode_color <output >decoded &&
 	grep "<BOLD;RED>error<RESET>: error" decoded &&
 	grep "<BOLD;RED>ERROR<RESET>: also highlighted" decoded
 '
 
 test_expect_success 'leading space' '
-	git --git-dir child/.git -c color.remote=always push -f origin HEAD:refs/heads/leading-space 2>output &&        cat output &&
+	git --git-dir child/.git -c color.remote=always push -f origin HEAD:refs/heads/leading-space 2>output &&
 	test_decode_color <output >decoded &&
 	grep "  <BOLD;RED>error<RESET>: leading space" decoded
 '

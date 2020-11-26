@@ -1,13 +1,11 @@
 /*
  * Handle git attributes.  See gitattributes(5) for a description of
- * the file syntax, and Documentation/technical/api-gitattributes.txt
- * for a description of the API.
+ * the file syntax, and attr.h for a description of the API.
  *
  * One basic design decision here is that we are not going to support
  * an insanely large number of attributes.
  */
 
-#define NO_THE_INDEX_COMPATIBILITY_MACROS
 #include "cache.h"
 #include "config.h"
 #include "exec-cmd.h"
@@ -54,16 +52,9 @@ static inline void hashmap_unlock(struct attr_hashmap *map)
 	pthread_mutex_unlock(&map->mutex);
 }
 
-/*
- * The global dictionary of all interned attributes.  This
- * is a singleton object which is shared between threads.
- * Access to this dictionary must be surrounded with a mutex.
- */
-static struct attr_hashmap g_attr_hashmap;
-
 /* The container for objects stored in "struct attr_hashmap" */
 struct attr_hash_entry {
-	struct hashmap_entry ent; /* must be the first member! */
+	struct hashmap_entry ent;
 	const char *key; /* the key; memory should be owned by value */
 	size_t keylen; /* length of the key */
 	void *value; /* the stored value */
@@ -71,20 +62,25 @@ struct attr_hash_entry {
 
 /* attr_hashmap comparison function */
 static int attr_hash_entry_cmp(const void *unused_cmp_data,
-			       const void *entry,
-			       const void *entry_or_key,
+			       const struct hashmap_entry *eptr,
+			       const struct hashmap_entry *entry_or_key,
 			       const void *unused_keydata)
 {
-	const struct attr_hash_entry *a = entry;
-	const struct attr_hash_entry *b = entry_or_key;
+	const struct attr_hash_entry *a, *b;
+
+	a = container_of(eptr, const struct attr_hash_entry, ent);
+	b = container_of(entry_or_key, const struct attr_hash_entry, ent);
 	return (a->keylen != b->keylen) || strncmp(a->key, b->key, a->keylen);
 }
 
-/* Initialize an 'attr_hashmap' object */
-static void attr_hashmap_init(struct attr_hashmap *map)
-{
-	hashmap_init(&map->map, attr_hash_entry_cmp, NULL, 0);
-}
+/*
+ * The global dictionary of all interned attributes.  This
+ * is a singleton object which is shared between threads.
+ * Access to this dictionary must be surrounded with a mutex.
+ */
+static struct attr_hashmap g_attr_hashmap = {
+	HASHMAP_INIT(attr_hash_entry_cmp, NULL)
+};
 
 /*
  * Retrieve the 'value' stored in a hashmap given the provided 'key'.
@@ -96,13 +92,10 @@ static void *attr_hashmap_get(struct attr_hashmap *map,
 	struct attr_hash_entry k;
 	struct attr_hash_entry *e;
 
-	if (!map->map.tablesize)
-		attr_hashmap_init(map);
-
-	hashmap_entry_init(&k, memhash(key, keylen));
+	hashmap_entry_init(&k.ent, memhash(key, keylen));
 	k.key = key;
 	k.keylen = keylen;
-	e = hashmap_get(&map->map, &k, NULL);
+	e = hashmap_get_entry(&map->map, &k, ent, NULL);
 
 	return e ? e->value : NULL;
 }
@@ -114,16 +107,13 @@ static void attr_hashmap_add(struct attr_hashmap *map,
 {
 	struct attr_hash_entry *e;
 
-	if (!map->map.tablesize)
-		attr_hashmap_init(map);
-
 	e = xmalloc(sizeof(struct attr_hash_entry));
-	hashmap_entry_init(e, memhash(key, keylen));
+	hashmap_entry_init(&e->ent, memhash(key, keylen));
 	e->key = key;
 	e->keylen = keylen;
 	e->value = value;
 
-	hashmap_add(&map->map, e);
+	hashmap_add(&map->map, &e->ent);
 }
 
 struct all_attrs_item {
@@ -162,12 +152,12 @@ static void all_attrs_init(struct attr_hashmap *map, struct attr_check *check)
 	if (size != check->all_attrs_nr) {
 		struct attr_hash_entry *e;
 		struct hashmap_iter iter;
-		hashmap_iter_init(&map->map, &iter);
 
 		REALLOC_ARRAY(check->all_attrs, size);
 		check->all_attrs_nr = size;
 
-		while ((e = hashmap_iter_next(&iter))) {
+		hashmap_for_each_entry(&map->map, &iter, e,
+					ent /* member name */) {
 			const struct git_attr *a = e->value;
 			check->all_attrs[a->attr_nr].attr = a;
 		}
@@ -260,7 +250,7 @@ struct pattern {
 	const char *pattern;
 	int patternlen;
 	int nowildcardlen;
-	unsigned flags;		/* EXC_FLAG_* */
+	unsigned flags;		/* PATTERN_FLAG_* */
 };
 
 /*
@@ -401,11 +391,11 @@ static struct match_attr *parse_attr_line(const char *line, const char *src,
 		char *p = (char *)&(res->state[num_attr]);
 		memcpy(p, name, namelen);
 		res->u.pat.pattern = p;
-		parse_exclude_pattern(&res->u.pat.pattern,
+		parse_path_pattern(&res->u.pat.pattern,
 				      &res->u.pat.patternlen,
 				      &res->u.pat.flags,
 				      &res->u.pat.nowildcardlen);
-		if (res->u.pat.flags & EXC_FLAG_NEGATIVE) {
+		if (res->u.pat.flags & PATTERN_FLAG_NEGATIVE) {
 			warning(_("Negative patterns are ignored in git attributes\n"
 				  "Use '\\!' for literal leading exclamation."));
 			goto fail_return;
@@ -432,14 +422,14 @@ fail_return:
  * Like info/exclude and .gitignore, the attribute information can
  * come from many places.
  *
- * (1) .gitattribute file of the same directory;
- * (2) .gitattribute file of the parent directory if (1) does not have
+ * (1) .gitattributes file of the same directory;
+ * (2) .gitattributes file of the parent directory if (1) does not have
  *      any match; this goes recursively upwards, just like .gitignore.
  * (3) $GIT_DIR/info/attributes, which overrides both of the above.
  *
  * In the same file, later entries override the earlier match, so in the
  * global list, we would have entries from info/attributes the earliest
- * (reading the file from top to bottom), .gitattribute of the root
+ * (reading the file from top to bottom), .gitattributes of the root
  * directory (again, reading the file from top to bottom) down to the
  * current directory, and then scan the list backwards to find the first match.
  * This is exactly the same as what is_excluded() does in dir.c to deal with
@@ -900,7 +890,7 @@ static void prepare_attr_stack(const struct index_state *istate,
 	 * set of attribute definitions, followed by the contents
 	 * of $(prefix)/etc/gitattributes and a file specified by
 	 * core.attributesfile.  Then, contents from
-	 * .gitattribute files from directories closer to the
+	 * .gitattributes files from directories closer to the
 	 * root to the ones in deeper directories are pushed
 	 * to the stack.  Finally, at the very top of the stack
 	 * we always keep the contents of $GIT_DIR/info/attributes.
@@ -992,10 +982,10 @@ static int path_matches(const char *pathname, int pathlen,
 	int prefix = pat->nowildcardlen;
 	int isdir = (pathlen && pathname[pathlen - 1] == '/');
 
-	if ((pat->flags & EXC_FLAG_MUSTBEDIR) && !isdir)
+	if ((pat->flags & PATTERN_FLAG_MUSTBEDIR) && !isdir)
 		return 0;
 
-	if (pat->flags & EXC_FLAG_NODIR) {
+	if (pat->flags & PATTERN_FLAG_NODIR) {
 		return match_basename(pathname + basename_offset,
 				      pathlen - basename_offset - isdir,
 				      pattern, prefix,
@@ -1092,7 +1082,7 @@ static void collect_some_attrs(const struct index_state *istate,
 			       const char *path,
 			       struct attr_check *check)
 {
-	int i, pathlen, rem, dirlen;
+	int pathlen, rem, dirlen;
 	const char *cp, *last_slash = NULL;
 	int basename_offset;
 
@@ -1112,20 +1102,6 @@ static void collect_some_attrs(const struct index_state *istate,
 	prepare_attr_stack(istate, path, dirlen, &check->stack);
 	all_attrs_init(&g_attr_hashmap, check);
 	determine_macros(check->all_attrs, check->stack);
-
-	if (check->nr) {
-		rem = 0;
-		for (i = 0; i < check->nr; i++) {
-			int n = check->items[i].attr->attr_nr;
-			struct all_attrs_item *item = &check->all_attrs[n];
-			if (item->macro) {
-				item->value = ATTR__UNSET;
-				rem++;
-			}
-		}
-		if (rem == check->nr)
-			return;
-	}
 
 	rem = check->all_attrs_nr;
 	fill(path, pathlen, basename_offset, check->stack, check->all_attrs, rem);
